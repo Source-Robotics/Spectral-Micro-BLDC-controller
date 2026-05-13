@@ -20,6 +20,7 @@
 /* Includes ------------------------------------------------------------------*/
 
 #include "EEPROM.h"
+#include "bootloader_config.h"
 
 I2C_eeprom eeprom(DEVICEADDRESS, EEPROM);
 
@@ -129,6 +130,9 @@ void read_config()
   controller.HARDWARE_VERSION = readInt(HARDWARE_VERSION_EEPROM);
   controller.BATCH_DATE = readInt(BATCH_DATA_EEPROM);
   controller.CAN_ID = readInt(CAN_ID_EEPROM);
+  if (!spectral_can_id_int_is_valid(controller.CAN_ID)) {
+    controller.CAN_ID = 0;
+  }
   controller.SOFTWARE_VERSION = readInt(SOFTWARE_VERSION_EEPROM);
   controller.LED_ON_OFF = readInt(LED_ON_OFF_EEPROM);
   controller.Thermistor_on_off = readInt(THERMISTOR_ON_OFF_EEPROM);
@@ -190,6 +194,7 @@ void Write_config()
   ///
 
   writeInt(CAN_ID_EEPROM, controller.CAN_ID);
+  Bootloader_SyncBoardId((uint8_t)controller.CAN_ID);
   writeInt(SOFTWARE_VERSION_EEPROM, controller.SOFTWARE_VERSION);
   writeInt(LED_ON_OFF_EEPROM, controller.LED_ON_OFF);
   writeInt(THERMISTOR_ON_OFF_EEPROM, controller.Thermistor_on_off);

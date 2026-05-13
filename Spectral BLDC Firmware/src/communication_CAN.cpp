@@ -20,6 +20,7 @@
 /* Includes ------------------------------------------------------------------*/
 
 #include "communication_CAN.h"
+#include "bootloader_config.h"
 
 /*
 The node with the lowest ID will always win the arbitration and therefore has the highest priority.
@@ -460,7 +461,7 @@ void CAN_protocol(Stream &Serialport)
                 #if (DEBUG_COMS > 0)
                 Serialport.println("Received Reset");
                 #endif
-                NVIC_SystemReset();
+                Bootloader_ResetIntoBootloader();
                 break;
             }
 
@@ -596,12 +597,20 @@ void CAN_protocol(Stream &Serialport)
 
             case IN_CAN_ID:{
                 if(CAN_RX_msg.len == 1){
-                    controller.CAN_ID = CAN_RX_msg.data[0];
-                    controller.Wrong_DL = 0;
-                    #if (DEBUG_COMS > 0)
-                    Serialport.print("New CAN ID is: ");
-                    Serialport.println(CAN_RX_msg.data[0]);
-                    #endif
+                    uint8_t new_can_id = CAN_RX_msg.data[0];
+                    if (spectral_can_id_is_valid(new_can_id)) {
+                        controller.CAN_ID = new_can_id;
+                        controller.Wrong_DL = 0;
+                        #if (DEBUG_COMS > 0)
+                        Serialport.print("New CAN ID is: ");
+                        Serialport.println(new_can_id);
+                        #endif
+                    } else {
+                        controller.Wrong_DL = 1;
+                        #if (DEBUG_COMS > 0)
+                        Serialport.println("CANID; Invalid ID");
+                        #endif
+                    }
                 }else{
                     #if (DEBUG_COMS > 0)
                     Serialport.println("CANID; Wrong DL");
