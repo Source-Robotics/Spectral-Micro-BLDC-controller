@@ -595,6 +595,25 @@ void CAN_protocol(Stream &Serialport)
                 break;
             }
 
+            case IN_VLIM:{
+                if(CAN_RX_msg.len == 4){
+                    uint8_t temp_buffer[] =  {CAN_RX_msg.data[0], CAN_RX_msg.data[1], CAN_RX_msg.data[2], CAN_RX_msg.data[3]};
+                    PID.Voltage_limit = fourBytesToInt(temp_buffer);
+                    controller.Wrong_DL = 0;
+                    #if (DEBUG_COMS > 0)
+                    Serialport.print("New Voltage limit is: ");
+                    Serialport.println(PID.Voltage_limit);
+                    #endif
+                }else{
+                    #if (DEBUG_COMS > 0)
+                    Serialport.println("VLIM; Wrong DL");
+                    #endif
+                    controller.Wrong_DL = 1;
+                }
+
+                break;
+            }
+
             case IN_CAN_ID:{
                 if(CAN_RX_msg.len == 1){
                     uint8_t new_can_id = CAN_RX_msg.data[0];

@@ -164,6 +164,7 @@ CAN BUS CONSTANTS
 #define IN_LIMITS 20
 #define IN_IQ 21
 #define IN_KT 22
+#define IN_VLIM 34 // PID voltage limit (PID.Voltage_limit), 4-byte int payload in mV
 
 // INPUT CAN command IDS (Commands that spectral driver can receive)
 // To these commands spectral responds with specific command ID
