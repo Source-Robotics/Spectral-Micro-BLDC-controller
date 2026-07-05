@@ -23,7 +23,7 @@
 
 // Firmware/release version. BUMP THIS on every release so #Info reports the actual
 // firmware loaded (not a stale value from EEPROM). Should match the GitHub release tag (Vxxx).
-#define FIRMWARE_VERSION 102
+#define FIRMWARE_VERSION 105
 
 #define MAX_DRIVE_CURRENT 2800 // 2500 mA
 
