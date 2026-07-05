@@ -107,6 +107,18 @@ void Collect_data()
   controller.Sense2_mA = -Get_current_mA(controller.Sense2_Raw);
   controller.Sense3_mA = -controller.Sense1_mA - controller.Sense2_mA;
 
+  // Reversed-wiring compensation (software reflection): swap phase-B/phase-C currents
+  // (Sense2 <-> Sense3) when commutation_dir < 0, matching the PWM2<->PWM3 swap in Phase_order().
+  // Kirchhoff still holds (Sense1+Sense2+Sense3 == 0). This turns a reversed-wired motor into a
+  // normally-wired (proper-rotation) one so it calibrates/runs like the forward wiring.
+  // (bench-confirm: B<->C is the conventional 3-phase reflection axis)
+  if (controller.commutation_dir < 0)
+  {
+    int tmp = controller.Sense2_mA;
+    controller.Sense2_mA = controller.Sense3_mA;
+    controller.Sense3_mA = tmp;
+  }
+
   controller.VBUS_mV = Get_voltage_mA(controller.VBUS_RAW);
   /***********************************/
 
@@ -358,9 +370,6 @@ void IT_callback(void)
     case 8:
       Voltage_Torque_mode();
       break;
-    case 9:
-      Calibrate_Angle_Offset();
-      break;
     default:
       /// Idle
       break;
@@ -385,181 +394,348 @@ void IT_callback(void)
 #endif
 }
 
-/// @brief Non-blocking self-calibration of theta_offset
-/// @return CALIB_IN_PROGRESS (0), CALIB_DONE (1), or CALIB_ABORTED (-1)
-/// @hack this one runs standalone
-int Calibrate_Angle_Offset()
+/// @brief Apply a static DC field vector at a fixed electrical angle to lock the rotor.
+/// Pure +Ud (Uq = 0) pulls the rotor d-axis to 'angle'. Position_Raw is assumed already
+/// refreshed by the caller's Collect_data() this tick.
+static void Align_apply_field(float angle, int voltage_mV)
 {
-  enum CalibResult
-  {
-    CALIB_IN_PROGRESS = 0,
-    CALIB_DONE = 1,
-    CALIB_ABORTED = -1
-  };
-  const int MAX_CALIB_CYCLES = 800000; // limit to prevent infinite loop, Around 2 minutes
+  dq0_abc_variables(angle); // sets FOC.sine_value / cosine_value / const1..4 used by abc_fast
+  PID.Ud_setpoint = voltage_mV;
+  PID.Uq_setpoint = 0;
+  Voltage_Torque_mode();
+}
 
-  static int state = 0;
-  static int counter = 0;
-  static float forward_accum = 0;
-  static float reverse_accum = 0;
-  static float forward_avg = 0;
-  static float reverse_avg = 0;
-  static int last_error_sign = 0;
-  static float theta_nudge = -0.025f;
-  static int initial_sign_done = 0; // flag if initial sign test is done
-  static int cycle_counter = 0;
+/// @brief theta_offset that makes Electric_Angle == lock_angle at the current encoder position.
+/// Uses the same direction-independent base angle as Collect_data(), so it is correct for
+/// commutation_dir = +1 and -1 alike.
+static float Align_read_offset(float lock_angle)
+{
+  int32_t bt = ((int32_t)controller.Position_Raw * controller.pole_pairs) % CPR;
+  bt = (bt + CPR) % CPR;
+  float theta_base = RAD_CONST * bt;
+  float off = lock_angle - theta_base;
+  while (off < 0)
+    off += PI2;
+  while (off >= PI2)
+    off -= PI2;
+  return off;
+}
+
+/// @brief Non-blocking rotor-alignment angle-offset calibration (Method A).
+/// Locks the rotor to a known electrical angle with a DC field (no spinning), reads the
+/// encoder, and derives theta_offset directly. Approaches the lock from both sides and
+/// averages to cancel static friction/cogging bias, then verifies that +Iq drives the
+/// encoder forward (the +Iq -> +encoder invariant). Direction-agnostic; unlike the
+/// velocity-symmetry search it has a single stable solution per electrical cycle.
+/// @return 0 in progress, 1 done (theta_offset set), -1 failed
+int Calibrate_Angle_Offset_Align()
+{
+  enum { IN_PROGRESS = 0, DONE = 1, FAILED = -1 };
 
   // --- config ---
-  const int settle_cycles = 4000;
-  const int measure_cycles = 200;
-  const float error_threshold = 2000.0f;
-  const float min_velocity = 1000.0f;
+  const float LOCK_ANGLE = 0.0f;       // electrical angle we lock the rotor to
+  const float DELTA = 0.6f;            // approach offset (elec rad) for both-sides averaging
+  const int approach_cycles = 4000;    // ~0.64 s to drag the rotor to the approach angle
+  const int settle_cycles = 8000;      // ~1.28 s to settle on the lock angle
+  const int verify_settle = 6000;      // settle before measuring the verify velocity
+  const int verify_measure = 300;      // velocity averaging window
+  const float fwd_threshold = 1000.0f; // min |velocity| (ticks/s) to count as "spinning"
+  const int MAX_CYCLES = 500000;       // ~80 s hard timeout for the lock+verify stages
 
-  // check max cycles
-  cycle_counter++;
-  if (cycle_counter > MAX_CALIB_CYCLES)
+  // symmetry refine (after the lock): DETERMINISTIC sweep of theta_offset around the lock seed.
+  // Sample the fwd/rev speed gap at a fixed grid of offsets and keep the minimum. No gradient walk,
+  // so it cannot thrash on measurement noise or land differently each run -- same result every time,
+  // for commutation_dir = +-1 alike. Coarse pass finds the region; fine pass refines the coarse best.
+  int trim_current = controller.calibration_offset_current; // steady-state, proven drive level
+  const int trim_settle = 6000;        // ~1 s: speed steady (incl. after reversal) before measuring
+  const int trim_measure = 300;        // velocity averaging window
+  const float coarse_half = 0.45f;     // coarse sweep spans seed +- 0.45 rad
+  const float coarse_step = 0.09f;     // -> 11 coarse points (index 0..10)
+  const int coarse_points = 10;        // last coarse index
+  const float fine_half = 0.09f;       // fine sweep spans coarse-best +- 0.09 rad
+  const float fine_step = 0.02f;       // -> 10 fine points, ~0.02 rad final resolution
+  const int fine_points = 9;           // last fine index
+
+  static int st = 0;
+  static int cnt = 0;
+  static int cyc = 0;
+  static int retry = 0;
+  static float off_a = 0.0f;
+  static float off_b = 0.0f;
+  static float vel_accum = 0.0f;
+  static int lock_v = 0;
+
+  // sweep state
+  static float sweep_center = 0.0f;
+  static int sweep_index = 0;
+  static int sweep_stage = 0; // 0 = coarse, 1 = fine
+  static float best_off = 0.0f;
+  static float best_gap = 0.0f;
+  static float best_vfwd = 0.0f;
+  static float best_vrev = 0.0f;
+  static float vfwd_t = 0.0f;
+
+  cyc++;
+  if (cyc > MAX_CYCLES && st < 8) // timeout guards only the lock+verify stages; the trim is iteration-bounded
   {
-    controller.Controller_mode = 0;
-    // reset for next time
-    state = 0;
-    counter = 0;
-    forward_accum = 0;
-    reverse_accum = 0;
-    forward_avg = 0;
-    reverse_avg = 0;
-    last_error_sign = 0;
-    theta_nudge = 0.025f;
-    initial_sign_done = 0;
-    cycle_counter = 0;
-    return CALIB_DONE;
+    PID.Ud_setpoint = 0;
+    PID.Uq_setpoint = 0;
+    PID.Id_setpoint = 0;
+    PID.Iq_setpoint = 0;
+    st = cnt = cyc = retry = 0;
+    off_a = off_b = vel_accum = 0.0f;
+    lock_v = 0;
+    return FAILED;
   }
 
-  Torque_mode();
-
-  switch (state)
+  switch (st)
   {
-  case 0: // forward spin
+  case 0: // init: derive lock voltage from measured resistance, clamp to a safe band
+    lock_v = (int)((float)controller.calibration_offset_current * controller.Total_Resistance); // mA * ohm = mV
+    if (lock_v < 500)
+      lock_v = 500;
+    if (lock_v > 4000)
+      lock_v = 4000;
+    cnt = 0;
+    st = 1;
+    break;
+
+  case 1: // approach the lock angle from below
+    Align_apply_field(LOCK_ANGLE - DELTA + PI2, lock_v);
+    if (++cnt >= approach_cycles)
+    {
+      cnt = 0;
+      st = 2;
+    }
+    break;
+
+  case 2: // settle on the lock angle, then record offset A
+    Align_apply_field(LOCK_ANGLE, lock_v);
+    if (++cnt >= settle_cycles)
+    {
+      off_a = Align_read_offset(LOCK_ANGLE);
+      cnt = 0;
+      st = 3;
+    }
+    break;
+
+  case 3: // approach the lock angle from above
+    Align_apply_field(LOCK_ANGLE + DELTA, lock_v);
+    if (++cnt >= approach_cycles)
+    {
+      cnt = 0;
+      st = 4;
+    }
+    break;
+
+  case 4: // settle on the lock angle, then record offset B
+    Align_apply_field(LOCK_ANGLE, lock_v);
+    if (++cnt >= settle_cycles)
+    {
+      off_b = Align_read_offset(LOCK_ANGLE);
+      cnt = 0;
+      st = 5;
+    }
+    break;
+
+  case 5: // circular-average the two offsets and commit
+  {
+    float d = off_b - off_a;
+    while (d > PI)
+      d -= PI2;
+    while (d < -PI)
+      d += PI2;
+    float off = off_a + d * 0.5f;
+    if (off < 0)
+      off += PI2;
+    if (off >= PI2)
+      off -= PI2;
+    controller.theta_offset = off;
+    controller.aligned_angle = off; // telemetry
+    PID.Ud_setpoint = 0;
+    PID.Uq_setpoint = 0;
+    vel_accum = 0.0f;
+    cnt = 0;
+    st = 6;
+    break;
+  }
+
+  case 6: // verify: apply +Iq and let it settle
     PID.Id_setpoint = 0;
+    PID.Iq_current_limit = 1600;
     PID.Iq_setpoint = controller.calibration_offset_current;
-    counter = 0;
-    forward_accum = 0;
-    state = 1;
-    break;
-
-  case 1: // forward settle
-    counter++;
-    if (counter >= settle_cycles)
+    Torque_mode();
+    if (++cnt >= verify_settle)
     {
-      counter = 0;
-      state = 2;
+      cnt = 0;
+      st = 7;
     }
     break;
 
-  case 2: // forward measure
-    counter++;
-    forward_accum += controller.Velocity_Filter;
-    if (counter >= measure_cycles)
+  case 7: // verify: average velocity under +Iq, enforce +Iq -> +encoder
+    PID.Iq_setpoint = controller.calibration_offset_current;
+    Torque_mode();
+    vel_accum += controller.Velocity_Filter;
+    if (++cnt >= verify_measure)
     {
-      forward_avg = forward_accum / measure_cycles;
-      controller.Velocity_fwd = forward_avg;
-      counter = 0;
-
-      PID.Iq_setpoint = -controller.calibration_offset_current;
-      reverse_accum = 0;
-      state = 3;
-    }
-    break;
-
-  case 3: // reverse settle
-    counter++;
-    if (counter >= settle_cycles)
-    {
-      counter = 0;
-      state = 4;
-    }
-    break;
-
-  case 4: // reverse measure
-    counter++;
-    reverse_accum += controller.Velocity_Filter;
-    if (counter >= measure_cycles)
-    {
-      reverse_avg = reverse_accum / measure_cycles;
-      controller.Velocity_bwd = reverse_avg;
-
+      float vfwd = vel_accum / verify_measure;
+      controller.Velocity_fwd = (int)vfwd; // telemetry
       PID.Iq_setpoint = 0;
       PID.Id_setpoint = 0;
 
-      // determine initial theta_offset sign
-      if (!initial_sign_done)
+      if (vfwd > fwd_threshold)
       {
-        if (fabs(forward_avg) > fabs(reverse_avg))
-          theta_nudge = -fabs(theta_nudge);
-        else
-          theta_nudge = fabs(theta_nudge);
-
-        initial_sign_done = 1;
+        // +Iq -> +encoder confirmed; refine with the measured-direction symmetry search (keep-best)
+        cnt = 0;
+        st = 8;
       }
-
-      state = 5; // go to normal iterative nudging
+      else if (vfwd < -fwd_threshold && retry == 0)
+      {
+        // +Iq -> -encoder: 180-deg reference, flip once and re-verify
+        controller.theta_offset += PI;
+        if (controller.theta_offset >= PI2)
+          controller.theta_offset -= PI2;
+        controller.aligned_angle = controller.theta_offset;
+        retry = 1;
+        vel_accum = 0.0f;
+        cnt = 0;
+        st = 6;
+      }
+      else
+      {
+        // still reversed after a flip, or not spinning at all -> fail
+        st = cnt = cyc = retry = 0;
+        off_a = off_b = vel_accum = 0.0f;
+        lock_v = 0;
+        return FAILED;
+      }
     }
     break;
 
-  case 5: // iterative nudging
-  {
-    float error = forward_avg + reverse_avg;
-    if (fabs(forward_avg) < min_velocity || fabs(reverse_avg) < min_velocity)
-    {
-      error = (forward_avg + reverse_avg > 0) ? 10000.0f : -10000.0f;
-    }
+  case 8: // sweep init: center the grid on the lock's offset, start the coarse pass
+    PID.Iq_current_limit = 1600;
+    sweep_center = controller.theta_offset;
+    sweep_stage = 0;
+    sweep_index = 0;
+    best_gap = 1e12f;
+    best_off = controller.theta_offset;
+    best_vfwd = 0.0f;
+    best_vrev = 0.0f;
+    controller.theta_offset = sweep_center - coarse_half; // first coarse point
+    if (controller.theta_offset < 0)
+      controller.theta_offset += PI2;
+    vel_accum = 0.0f;
+    cnt = 0;
+    st = 9;
+    break;
 
-    if (fabs(error) > error_threshold)
+  case 9: // sweep: settle under +Iq at the current grid offset
+    PID.Id_setpoint = 0;
+    PID.Iq_setpoint = trim_current;
+    Torque_mode();
+    if (++cnt >= trim_settle)
     {
-      int error_sign = (error > 0) ? 1 : -1;
-      if (last_error_sign != 0 && error_sign != last_error_sign)
+      cnt = 0;
+      vel_accum = 0.0f;
+      st = 10;
+    }
+    break;
+
+  case 10: // sweep: measure forward speed
+    PID.Iq_setpoint = trim_current;
+    Torque_mode();
+    vel_accum += controller.Velocity_Filter;
+    if (++cnt >= trim_measure)
+    {
+      vfwd_t = vel_accum / trim_measure;
+      cnt = 0;
+      st = 11;
+    }
+    break;
+
+  case 11: // sweep: settle under -Iq
+    PID.Iq_setpoint = -trim_current;
+    Torque_mode();
+    if (++cnt >= trim_settle)
+    {
+      cnt = 0;
+      vel_accum = 0.0f;
+      st = 12;
+    }
+    break;
+
+  case 12: // sweep: measure reverse speed, record the gap, advance the grid
+  {
+    PID.Iq_setpoint = -trim_current;
+    Torque_mode();
+    vel_accum += controller.Velocity_Filter;
+    if (++cnt >= trim_measure)
+    {
+      float vrev_t = vel_accum / trim_measure;
+      float gap = fabs(vfwd_t + vrev_t); // 0 when |fwd| == |rev|
+      cnt = 0;
+
+      if (gap < best_gap)
       {
-        theta_nudge = -theta_nudge;
+        best_gap = gap;
+        best_off = controller.theta_offset;
+        best_vfwd = vfwd_t;
+        best_vrev = vrev_t;
       }
 
-      controller.theta_offset += theta_nudge;
+      sweep_index++;
 
-      if (controller.theta_offset > PI2)
-        controller.theta_offset -= PI2;
+      if (sweep_stage == 0)
+      {
+        if (sweep_index <= coarse_points)
+        {
+          controller.theta_offset = sweep_center - coarse_half + sweep_index * coarse_step;
+        }
+        else
+        {
+          // coarse pass done -> fine pass around the coarse best
+          sweep_stage = 1;
+          sweep_index = 0;
+          sweep_center = best_off;
+          controller.theta_offset = sweep_center - fine_half;
+        }
+      }
+      else // fine pass
+      {
+        if (sweep_index <= fine_points)
+        {
+          controller.theta_offset = sweep_center - fine_half + sweep_index * fine_step;
+        }
+        else
+        {
+          // done: commit the best offset found (deterministic, same every run)
+          controller.theta_offset = best_off;
+          controller.aligned_angle = best_off;
+          controller.Velocity_fwd = (int)best_vfwd; // telemetry: symmetry at the committed offset
+          controller.Velocity_bwd = (int)best_vrev;
+          PID.Iq_setpoint = 0;
+          PID.Id_setpoint = 0;
+          st = cnt = cyc = retry = 0;
+          off_a = off_b = vel_accum = 0.0f;
+          lock_v = 0;
+          sweep_index = 0;
+          sweep_stage = 0;
+          return DONE;
+        }
+      }
+
       if (controller.theta_offset < 0)
         controller.theta_offset += PI2;
+      if (controller.theta_offset >= PI2)
+        controller.theta_offset -= PI2;
 
-      last_error_sign = error_sign;
-
-      // restart measurement cycle
-      state = 0;
-      counter = 0;
-      forward_accum = 0;
-      reverse_accum = 0;
+      st = 9; // measure the next grid point
     }
-    else
-    {
-      state = 6; // done
-    }
+    break;
   }
-  break;
-
-  case 6: // finished
-    controller.Controller_mode = 0;
-    // reset for next time
-    state = 0;
-    counter = 0;
-    forward_accum = 0;
-    reverse_accum = 0;
-    forward_avg = 0;
-    reverse_avg = 0;
-    last_error_sign = 0;
-    theta_nudge = 0.025f;
-    initial_sign_done = 0;
-    cycle_counter = 0;
-    return CALIB_DONE;
   }
 
-  return CALIB_IN_PROGRESS;
+  return IN_PROGRESS;
 }
 
 /// @brief Interrupt callback routine for Calibration mode
@@ -598,10 +774,7 @@ void Update_IT_callback_calib()
   static int Phase_ticks = 0;
   static int Phase_start = 0;
   static int64_t _speed_accumulator = 0;
-  static float Voltage_multiplier[4] = {1, 1, 1};
-  static int64_t Controller_velocity_RPM[4] = {0, 0, 0};
   static int Spin_duration = 8500; // In interrupt ticks = 8500 * 200us = 1.7s
-  static int Start_position_phase = 0;
 
   static int KV_ticks = 0;
   static int KV_duration = 5000;
@@ -877,6 +1050,9 @@ Open loop spin; Get pole pair and dir
       pwm_set(PWM_CH3, FOC.PWM3, 13);
 
       open_loop_start = 1;
+      // Detect the wiring from the UN-swapped state; a board already saved as reversed must not
+      // spin with the software B<->C swap active, or it would mis-detect its own wiring.
+      controller.commutation_dir = 1;
     }
 
     // Read the position here after it becomes stable; we introduce small delay = 20000 * LOOP_TIME
@@ -935,25 +1111,33 @@ Open loop spin; Get pole pair and dir
       }
       else // If there is no error
       {
-        // Check the phase orientation of the motor
+        // Detect the wiring HANDEDNESS from the encoder response to the forward open-loop command,
+        // instead of failing / picking a DIR_ that only some wirings can satisfy. The open loop
+        // commanded an increasing electrical angle, so:
+        //   encoder advanced -> +Iq maps to +encoder in the base frame -> commutation_dir = +1
+        //   encoder went back -> phases are reversed -> commutation_dir = -1 (B<->C reflection on)
         controller.Open_loop_cal_status = 2;
-        if (start_position > controller.Position_Ticks)
-        {
-          controller.DIR_ = 0;
-        }
-        else
-        {
-          controller.DIR_ = 1;
-        }
+        controller.commutation_dir = (controller.Position_Ticks >= start_position) ? 1 : -1;
+        // Fixed base frame: the rotation (which cyclic wiring) is absorbed by theta_offset in
+        // Calibrate_Angle_Offset_Align, and the handedness by commutation_dir, so we no longer
+        // search DIR_/Phase_order -- pin them to the base mapping.
+        controller.DIR_ = 1;
+        controller.Phase_order = 2;
         calib_dir_pole_pair = 1;
       }
     }
   }
 
-  /// @todo Get it working for any phase order
   /////////////////////////////////////////////////////////////////////
   /*
-Calculate Correct phase order
+Confirm commutation, then find the angle offset (reversed-wiring-agnostic)
+
+  Was: spin 3 cyclic PWM orderings and require the fastest to be order 2, else fail with
+  "switch motor phases". Now the base frame is fixed (DIR_=1, Phase_order=2) and the wiring is
+  compensated entirely in software: commutation_dir (detected in the open-loop spin) handles the
+  handedness via the B<->C reflection, and theta_offset (Calibrate_Angle_Offset_Align) handles the
+  rotation over the full electrical cycle. So all we do here is (a) confirm the motor actually
+  commutates in EITHER direction, then (b) run the deterministic rotor-lock angle-offset search.
 */
   if (calib_dir_pole_pair == 1 && Phase_order_step == 0 && controller.Calib_error == 0)
   {
@@ -977,138 +1161,107 @@ Calculate Correct phase order
     }
     else
     {
-
-      if (Phase_step != 3)
+      Phase_ticks = Phase_ticks + 1;
+      switch (Phase_step)
       {
-        if (Phase_ticks < Spin_duration)
+      case 0: // Small delay, hold the rotor at zero torque before the spin test
+        if (Phase_ticks == 10000)
         {
-          Collect_data2();
-
-          dq0_abc_variables(controller.Electric_Angle);
-          dq0_fast_int(controller.Sense1_mA, controller.Sense2_mA, controller.Sense3_mA, &FOC.Id, &FOC.Iq);
-          float Ud_setpoint = 0;
-          float Uq_setpoint = (float)controller.Phase_voltage * (float)Voltage_multiplier[Phase_step];
-
-          limit_norm(&Ud_setpoint, &Uq_setpoint, controller.VBUS_mV * OVERMODULATION);
-          abc_fast(Ud_setpoint, Uq_setpoint, &FOC.U1, &FOC.U2, &FOC.U3);
-          // sinusoidal_commutation(controller.VBUS_mV, FOC.U1, FOC.U2, FOC.U3, &FOC.U1_normalized, &FOC.U2_normalized, &FOC.U3_normalized);
-          space_vector_commutation(controller.VBUS_mV, FOC.U1, FOC.U2, FOC.U3, &FOC.U1_normalized, &FOC.U2_normalized, &FOC.U3_normalized);
-
-          FOC.PWM1 = FOC.U1_normalized * PWM_MAX;
-          FOC.PWM2 = FOC.U2_normalized * PWM_MAX;
-          FOC.PWM3 = FOC.U3_normalized * PWM_MAX;
-
-          if (controller.DIR_ == 0)
-          {
-            if (Phase_step == 0)
-            {
-              pwm_set(PWM_CH2, FOC.PWM1, 13); // 2
-              pwm_set(PWM_CH1, FOC.PWM2, 13); // 1
-              pwm_set(PWM_CH3, FOC.PWM3, 13); // 3
-            }
-            else if (Phase_step == 1)
-            {
-              pwm_set(PWM_CH3, FOC.PWM1, 13); // 3
-              pwm_set(PWM_CH2, FOC.PWM2, 13); // 2
-              pwm_set(PWM_CH1, FOC.PWM3, 13); // 1
-            }
-            else if (Phase_step == 2)
-            {
-              pwm_set(PWM_CH1, FOC.PWM1, 13); // 1
-              pwm_set(PWM_CH3, FOC.PWM2, 13); // 3
-              pwm_set(PWM_CH2, FOC.PWM3, 13); // 2
-            }
-          }
-          else
-          {
-            if (Phase_step == 0)
-            {
-              pwm_set(PWM_CH1, FOC.PWM1, 13); // 1
-              pwm_set(PWM_CH2, FOC.PWM2, 13); // 2
-              pwm_set(PWM_CH3, FOC.PWM3, 13); // 3
-            }
-            else if (Phase_step == 1)
-            {
-              pwm_set(PWM_CH2, FOC.PWM1, 13); // 2
-              pwm_set(PWM_CH3, FOC.PWM2, 13); // 3
-              pwm_set(PWM_CH1, FOC.PWM3, 13); // 1
-            }
-            else if (Phase_step == 2)
-            {
-              pwm_set(PWM_CH3, FOC.PWM1, 13); // 3
-              pwm_set(PWM_CH1, FOC.PWM2, 13); // 1
-              pwm_set(PWM_CH2, FOC.PWM3, 13); // 2
-            }
-          }
-
-          Phase_ticks = Phase_ticks + 1;
-          _speed_accumulator = _speed_accumulator + controller.Velocity_Filter;
+          Phase_step = 1;
+          Phase_ticks = 0;
         }
         else
         {
-
-          int64_t vel_var = _speed_accumulator / Spin_duration;
-          // float vel_var = _speed_accumulator;
-          // int64_t RPM_speed = (vel_var * 60) / 16384;
-          // KV = (RPM/(Vpeak * sqrt(3) * 1.3433)) * 10
-          // Kt = 8.27/KV
-          // Flux_linkage = 2/3 * torque_constant / pole_pairs
-          Controller_velocity_RPM[Phase_step] = vel_var;
-          controller.temp = vel_var;
-          _speed_accumulator = 0;
-          Phase_ticks = 0;
-          Phase_step = Phase_step + 1;
+          Collect_data2();
+          dq0_abc_variables(controller.Electric_Angle);
+          dq0_fast_int(controller.Sense1_mA, controller.Sense2_mA, controller.Sense3_mA, &FOC.Id, &FOC.Iq);
+          PID.Ud_setpoint = 0;
+          PID.Uq_setpoint = 0;
+          Voltage_Torque_mode();
         }
-      }
-      else
-      {
+        break;
+
+      case 1: // Record the initial position
+        Collect_data2();
+        start_position = controller.Position_Ticks;
+        Phase_step = 2;
+        break;
+
+      case 2: // Spin with a voltage-torque command and confirm the motor actually turned
+        if (Phase_ticks < Spin_duration)
+        {
+          Collect_data2();
+          dq0_abc_variables(controller.Electric_Angle);
+          dq0_fast_int(controller.Sense1_mA, controller.Sense2_mA, controller.Sense3_mA, &FOC.Id, &FOC.Iq);
+          PID.Ud_setpoint = 0;
+          PID.Uq_setpoint = controller.Phase_voltage;
+          Voltage_Torque_mode();
+        }
+        else
+        {
+          int delta = controller.Position_Ticks - start_position;
+          int half_rotation_ticks = CPR / 2;
+          // Direction-agnostic: only confirm the motor moved (commutation works). The correct
+          // sense (+Iq -> +encoder) is enforced by the lock's verify step, so we must NOT fail /
+          // tell the user to switch phases here.
+          if (abs(delta) > half_rotation_ticks)
+          {
+            Phase_step = 3; // moved far enough in EITHER direction
+          }
+          else
+          {
+            // barely moved -> commutation genuinely not working
+            PID.Uq_setpoint = 0;
+            Voltage_Torque_mode();
+            Phase_ticks = 0;
+            Phase_start = 1;
+            Phase_step = 0;
+            controller.Kt_cal_status = 1;
+            controller.Phase_order_status = 1;
+            controller.Calib_error = 1;
+          }
+        }
+        break;
+
+      case 3: // Seed the angle-offset search
+        controller.theta_offset = 0;
+        Phase_step = 4;
+        break;
+
+      case 4: // Deterministic rotor-lock + verify + symmetry-sweep angle-offset calibration
+        Collect_data();
+        dq0_abc_variables(controller.Electric_Angle);
+        dq0_fast_int(controller.Sense1_mA, controller.Sense2_mA, controller.Sense3_mA, &FOC.Id, &FOC.Iq);
+        controller.temp_var_offset_calib = Calibrate_Angle_Offset_Align();
+        if (controller.temp_var_offset_calib == 1)
+        {
+          Phase_step = 5; // done
+        }
+        else if (controller.temp_var_offset_calib == -1)
+        {
+          // clean abort: alignment could not satisfy +Iq -> +encoder
+          Phase_ticks = 0;
+          Phase_start = 1;
+          Phase_step = 0;
+          controller.Kt_cal_status = 1;
+          controller.Phase_order_status = 1;
+          controller.Calib_error = 1;
+        }
+        break;
+
+      case 5: // End: previous steps were good, go to the Kt/KV calculation
         pwm_set(PWM_CH1, 0, 13);
         pwm_set(PWM_CH2, 0, 13);
         pwm_set(PWM_CH3, 0, 13);
-        float temp_KV = 0;
-
-        int64_t max_speed = maxInt3(Controller_velocity_RPM[0], Controller_velocity_RPM[1], Controller_velocity_RPM[2]);
-        if (max_speed == Controller_velocity_RPM[0])
-        {
-          controller.Phase_order = 0;
-        }
-        else if (max_speed == Controller_velocity_RPM[1])
-        {
-          controller.Phase_order = 1;
-        }
-        else if (max_speed == Controller_velocity_RPM[2])
-        {
-          controller.Phase_order = 2;
-        }
-
-        /*
-        for (int i = 0; i < 3; i++)
-        {
-
-          controller.KV = (float)(Controller_velocity_RPM[i] / ((float)((float)controller.Phase_voltage / (float)1000) * (float)Voltage_multiplier[i])) * (float)2;
-          controller.KV = (float)controller.KV * (float)0.85;
-          temp_KV = temp_KV + controller.KV;
-        }
-        temp_KV = temp_KV / 3;
-        controller.KV = temp_KV;
-        */
-
-        // If there is error. Error is if phase order is 0 or 1
-        if (controller.Phase_order == 1 || controller.Phase_order == 0)
-        {
-          controller.Calib_error = 1;
-          controller.Phase_order_status = 1;
-        }
-        else // If there is no error
-        {
-          // controller.Kt = float(8.27) / controller.KV;
-          // controller.flux_linkage = (float)2 / 3 * (float)controller.Kt / (float)controller.pole_pairs;
-          //  lambda = 60 / (sqrt(3) * pi * kv * pole_num) ???? TODO test
-          Phase_order_step = 1;
-          controller.Kt_cal_status = 2;
-          controller.Phase_order_status = 2;
-          Phase_order_step = 1;
-        }
+        Phase_ticks = 0;
+        Phase_start = 1;
+        Phase_step = 0;
+        controller.Phase_order = 2; // fixed base frame
+        Phase_order_step = 1;
+        controller.Kt_cal_status = 2;
+        controller.Phase_order_status = 2;
+        controller.Calib_error = 0;
+        break;
       }
     }
   }
@@ -1962,20 +2115,38 @@ int Get_voltage_mA(int adc_value)
 
 void Phase_order()
 {
+  // Reversed-wiring compensation (software reflection): swap phases B<->C (PWM2<->PWM3) when
+  // commutation_dir < 0, matching the Sense2<->Sense3 swap in Collect_data(). Together they form
+  // a reflection that cancels a physical phase reversal, so a reversed-wired motor becomes a
+  // normally-wired (proper-rotation) one and runs the exact same control path as forward wiring.
+  // The base routing below (DIR_/Phase_order) is the fixed hardware frame; commutation_dir handles
+  // the wiring handedness and theta_offset (from Calibrate_Angle_Offset_Align) handles the rotation.
+  // (bench-confirm: verify B<->C here + in Collect_data gives reversed wiring the same symmetric
+  //  calibration as forward, with +Iq -> +encoder)
+  int pwm_a = FOC.PWM1;
+  int pwm_b = FOC.PWM2;
+  int pwm_c = FOC.PWM3;
+  if (controller.commutation_dir < 0)
+  {
+    int tmp = pwm_b;
+    pwm_b = pwm_c;
+    pwm_c = tmp;
+  }
+
   if (controller.Phase_order == 2)
   {
     if (controller.DIR_ == 0)
     {
 
-      pwm_set(PWM_CH1, FOC.PWM1, 13);
-      pwm_set(PWM_CH3, FOC.PWM2, 13);
-      pwm_set(PWM_CH2, FOC.PWM3, 13);
+      pwm_set(PWM_CH1, pwm_a, 13);
+      pwm_set(PWM_CH3, pwm_b, 13);
+      pwm_set(PWM_CH2, pwm_c, 13);
     }
     else
     {
-      pwm_set(PWM_CH3, FOC.PWM1, 13);
-      pwm_set(PWM_CH1, FOC.PWM2, 13);
-      pwm_set(PWM_CH2, FOC.PWM3, 13);
+      pwm_set(PWM_CH3, pwm_a, 13);
+      pwm_set(PWM_CH1, pwm_b, 13);
+      pwm_set(PWM_CH2, pwm_c, 13);
     }
   }
 }
@@ -2046,6 +2217,17 @@ void Collect_data2()
   controller.Sense2_mA = Get_current_mA(controller.Sense2_Raw);
 
   controller.Sense3_mA = -controller.Sense1_mA - controller.Sense2_mA;
+
+  // Reversed-wiring compensation (software reflection): swap phase-B/phase-C currents
+  // (Sense2 <-> Sense3) when commutation_dir < 0, matching the PWM2<->PWM3 swap in Phase_order().
+  // Must be identical to the swap in Collect_data() so calibration and the run loop agree.
+  if (controller.commutation_dir < 0)
+  {
+    int tmp = controller.Sense2_mA;
+    controller.Sense2_mA = controller.Sense3_mA;
+    controller.Sense3_mA = tmp;
+  }
+
   controller.VBUS_mV = Get_voltage_mA(controller.VBUS_RAW);
   /***********************************/
 

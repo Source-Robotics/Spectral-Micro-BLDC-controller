@@ -76,6 +76,7 @@ typedef struct
     volatile int MT6816_parity_check_pass;
     volatile int DIR_ = 1; // When looking at the magnetic encoder counter-clockwise is POSITIVE rotation.
     volatile int Phase_order = 2;
+    volatile int commutation_dir = 1; // +1 or -1, auto-detected at calibration so +Iq/+velocity/+rotation map to +encoder rotation
 
     volatile int Thermistor_on_off = 0; // Are we taking termistor mesurements? 0 is off, 1 is on
 

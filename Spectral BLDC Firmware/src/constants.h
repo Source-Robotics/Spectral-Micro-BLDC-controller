@@ -21,6 +21,10 @@
 #ifndef CONSTANTS_H
 #define CONSTANTS_H
 
+// Firmware/release version. BUMP THIS on every release so #Info reports the actual
+// firmware loaded (not a stale value from EEPROM). Should match the GitHub release tag (Vxxx).
+#define FIRMWARE_VERSION 102
+
 #define MAX_DRIVE_CURRENT 2800 // 2500 mA
 
 #define MT6816_NO_MAGNET_BIT 0x0002
@@ -122,6 +126,7 @@ EEPROM CONSTANTS
 #define VOLTAGE_ERROR 176
 #define VOLTAGE_LIMIT 180
 #define THETA_OFFSET 184
+#define COMMUTATION_DIR_EEPROM 188 // stored 2 = reversed wiring, else forward (+1). Next free slot after THETA_OFFSET.
 /*
 CAN BUS CONSTANTS
 */

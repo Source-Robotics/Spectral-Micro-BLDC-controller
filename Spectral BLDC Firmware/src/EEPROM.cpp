@@ -133,7 +133,9 @@ void read_config()
   if (!spectral_can_id_int_is_valid(controller.CAN_ID)) {
     controller.CAN_ID = 0;
   }
-  controller.SOFTWARE_VERSION = readInt(SOFTWARE_VERSION_EEPROM);
+  // Report the firmware's own build version, not the (possibly stale) value in EEPROM.
+  // This way #Info reflects the flashed firmware immediately, without needing a #Default.
+  controller.SOFTWARE_VERSION = FIRMWARE_VERSION;
   controller.LED_ON_OFF = readInt(LED_ON_OFF_EEPROM);
   controller.Thermistor_on_off = readInt(THERMISTOR_ON_OFF_EEPROM);
   controller.pole_pairs = readInt(POLE_PAIR);
@@ -174,6 +176,8 @@ void read_config()
   controller.Max_Vbus = readInt(VOLTAGE_ERROR);
   PID.Voltage_limit = readInt(VOLTAGE_LIMIT);
   controller.theta_offset = readFloat(THETA_OFFSET);
+  // Stored as 2 = reversed, anything else (incl. erased 0xFFFFFFFF on legacy boards) = forward (+1)
+  controller.commutation_dir = (readInt(COMMUTATION_DIR_EEPROM) == 2) ? -1 : 1;
 
 }
 
@@ -237,6 +241,7 @@ void Write_config()
   writeInt(VOLTAGE_ERROR,controller.Max_Vbus);
   writeFloat(THETA_OFFSET, controller.theta_offset);
   writeInt(VOLTAGE_LIMIT,PID.Voltage_limit);
+  writeInt(COMMUTATION_DIR_EEPROM, (controller.commutation_dir < 0) ? 2 : 1);
 
 }
 
@@ -248,7 +253,7 @@ void Set_Default_config(){
   writeInt(BATCH_DATA_EEPROM, 24092024);
 
   writeInt(CAN_ID_EEPROM, 0);
-  writeInt(SOFTWARE_VERSION_EEPROM, 101);
+  writeInt(SOFTWARE_VERSION_EEPROM, FIRMWARE_VERSION);
   writeInt(LED_ON_OFF_EEPROM, 1);
   writeInt(THERMISTOR_ON_OFF_EEPROM, 0);
   writeInt(POLE_PAIR, 7);
@@ -290,6 +295,7 @@ void Set_Default_config(){
   writeInt(VOLTAGE_ERROR,29000);
   writeFloat(THETA_OFFSET, 0);
   writeInt(VOLTAGE_LIMIT,0);
+  writeInt(COMMUTATION_DIR_EEPROM, 1);
 
   read_config();
 

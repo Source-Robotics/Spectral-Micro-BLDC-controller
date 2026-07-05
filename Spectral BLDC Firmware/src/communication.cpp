@@ -494,21 +494,6 @@ void UART_protocol(Stream &Serialport)
                 Ticker_init(TIM3, LOOP_FREQ, Update_IT_callback_calib);
             }
 
-            // Enter calibration mode fro angle offset
-            else if (strcmp(command, "Calangle") == 0)
-            {
-                controller.theta_offset = 0;
-                controller.Controller_mode = 9;
-                if (controller.reset_pin_state == 0 && controller.sleep_pin_state == 0)
-                {
-                    digitalWriteFast(SLEEP, HIGH);
-                    digitalWriteFast(RESET, HIGH);
-                    controller.reset_pin_state = 1;
-                    controller.sleep_pin_state = 1;
-                }
-                Serialport.println("Calangle");
-            }
-
             // set get theta_offset
             else if (strcmp(command, "Offset") == 0)
             {
@@ -932,6 +917,12 @@ void UART_protocol(Stream &Serialport)
                 Serialport.println(controller.DIR_);
                 Serialport.print("Phase Order: ");
                 Serialport.println(controller.Phase_order);
+                Serialport.print("Commutation dir: ");
+                Serialport.println(controller.commutation_dir);
+                Serialport.print("Calib fwd/rev speed: ");
+                Serialport.print(controller.Velocity_fwd);
+                Serialport.print(" / ");
+                Serialport.println(controller.Velocity_bwd);
                 Serialport.print("Number of pole pairs: ");
                 Serialport.println(controller.pole_pairs);
                 Serialport.print("Single phase resistance: ");
