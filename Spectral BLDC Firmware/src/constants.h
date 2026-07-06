@@ -23,7 +23,7 @@
 
 // Firmware/release version. BUMP THIS on every release so #Info reports the actual
 // firmware loaded (not a stale value from EEPROM). Should match the GitHub release tag (Vxxx).
-#define FIRMWARE_VERSION 105
+#define FIRMWARE_VERSION 106
 
 #define MAX_DRIVE_CURRENT 2800 // 2500 mA
 
@@ -39,6 +39,9 @@
 
 #define MAX_TEMPERATURE 80
 
+#ifdef PI
+#undef PI // Arduino core's wiring_constants.h also defines PI; ours is used project-wide instead
+#endif
 #define PI 3.14159265359f
 
 #define PI2 6.283185307f
@@ -49,7 +52,7 @@
 
 #define RAD_CONST 0.000383495187f
 
-#define CPR2 16384 / 2
+#define CPR2 (16384 / 2)
 
 #define MIN_VOLTAGE
 
@@ -127,6 +130,43 @@ EEPROM CONSTANTS
 #define VOLTAGE_LIMIT 180
 #define THETA_OFFSET 184
 #define COMMUTATION_DIR_EEPROM 188 // stored 2 = reversed wiring, else forward (+1). Next free slot after THETA_OFFSET.
+
+// Two independent CRCs instead of one monolithic config CRC: a future firmware update that
+// adds a new SETTINGS field can only ever invalidate SETTINGS_CRC_EEPROM, never
+// CALIBRATION_CRC_EEPROM -- so it can't force a recalibration on hardware that may be hard
+// to physically reach. See EEPROM.cpp's read_config()/Compute_*_crc_from_eeprom().
+#define SETTINGS_CRC_EEPROM 196
+// No gap to 208 here (unlike the sibling stepper firmware): that gap there exists only
+// because ITS deployed boards previously held an experimental feature at 196/200/204. This
+// BLDC firmware never had that feature, so there's nothing to leave unused -- the layout is
+// packed tight instead.
+#define CALIBRATION_CRC_EEPROM 200
+
+// --- RESERVED, NOT CURRENTLY USED ---
+// Pre-reserved headroom in the calibration block for future calibration-adjacent features
+// (e.g. magnet alignment, sensorless-control observer parameters). Nothing reads or writes
+// these for any real purpose yet -- they are always 0. They ARE included in
+// CALIB_FLOAT_ADDRS/CALIB_INT_ADDRS (EEPROM.cpp) and therefore in the calibration CRC, so
+// that a future feature can start USING one of these addresses without changing the
+// calibration block's address list -- growing that list is what would invalidate every
+// already-sealed board's CRC (see the comment above Compute_calibration_crc_from_eeprom()).
+// A dedicated flags int is included so a future feature can mark "configured" independent
+// of whatever value(s) it stores (a value of 0 is otherwise ambiguous with "never set").
+//
+// IMPORTANT: this only works because these slots are being added now, before any board has
+// ever sealed a calibration CRC that includes them (this firmware release is what introduces
+// the CRC in the first place). If more headroom is needed AFTER boards are deployed with a
+// CRC sealed over this exact list, do NOT grow this list again -- give the new feature its
+// own independent block/CRC instead (the same pattern used to split Calibration from
+// Settings). A large/variable-size feature (e.g. an anticogging lookup table) should get its
+// own dedicated block regardless, not use these scalar slots.
+#define CALIB_RESERVED_F1_EEPROM 204     // unused float, reserved for a future feature
+#define CALIB_RESERVED_F2_EEPROM 208     // unused float, reserved for a future feature
+#define CALIB_RESERVED_F3_EEPROM 212     // unused float, reserved for a future feature
+#define CALIB_RESERVED_F4_EEPROM 216     // unused float, reserved for a future feature
+#define CALIB_RESERVED_I1_EEPROM 220     // unused int, reserved for a future feature
+#define CALIB_RESERVED_I2_EEPROM 224     // unused int, reserved for a future feature
+#define CALIB_FEATURE_FLAGS_EEPROM 228   // unused bitmask int, reserved for future "is configured" flags
 /*
 CAN BUS CONSTANTS
 */

@@ -299,14 +299,10 @@ int two_bytes_to_int(uint8_t *bytes)
 /// @param bytes
 /// @return signed int
 int fourBytesToInt(uint8_t *bytes) {
-  int value = (bytes[0] << 24) | (bytes[1] << 16) | (bytes[2] << 8) | bytes[3];
+  uint32_t value = ((uint32_t)bytes[0] << 24) | ((uint32_t)bytes[1] << 16) |
+                    ((uint32_t)bytes[2] << 8) | (uint32_t)bytes[3];
 
-  // Sign extend if needed
-  if (value & 0x80000000) {
-    value -= 1 << 32;
-  }
-
-  return value;
+  return (int32_t)value; // two's complement reinterpretation, no shift-by-32 needed
 }
 
 /// @brief Convert array of 4 bytes to float

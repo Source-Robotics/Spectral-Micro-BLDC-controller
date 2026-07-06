@@ -160,8 +160,30 @@ HardwareTimer* pwm_low(int ulPin, uint32_t PWM_freq)
   return TMR;
 }
 
-/** 
- * Set value to PWM pin to desired duty cycle 
+/// @brief Per-pin resolved timer+channel, so pwm_set() doesn't repeat the pin-map lookup
+/// chain (digitalPinToPinName -> pinmap_peripheral -> get_timer_index -> pinmap_function)
+/// on every call. The mapping from a pin to its timer/channel is fixed at compile time,
+/// so it only needs to be resolved once per pin, the first time that pin is used.
+struct PwmPinCache
+{
+  int pin = -1;
+  HardwareTimer *tmr = nullptr;
+  uint32_t channel = 0;
+};
+
+static PwmPinCache pwm_cache[4];
+
+static void pwm_resolve(int ulPin, HardwareTimer **tmr_out, uint32_t *channel_out)
+{
+  PinName pin = digitalPinToPinName(ulPin);
+  TIM_TypeDef *Instance = (TIM_TypeDef *)pinmap_peripheral(pin, PinMap_PWM);
+  uint32_t index = get_timer_index(Instance);
+  *tmr_out = (HardwareTimer *)(HardwareTimer_Handle[index]->__this);
+  *channel_out = STM_PIN_CHANNEL(pinmap_function(pin, PinMap_PWM));
+}
+
+/**
+ * Set value to PWM pin to desired duty cycle
  * ulPin is pin we want to set, value is value we set (duty)
  * resolution sets maximum value we can give to duty
  * @param[in] ulPin
@@ -170,13 +192,40 @@ HardwareTimer* pwm_low(int ulPin, uint32_t PWM_freq)
 */
 void pwm_set(int ulPin, uint32_t value, int resolution)
 {
-  PinName pin = digitalPinToPinName(ulPin);
-  TIM_TypeDef *Instance = (TIM_TypeDef *)pinmap_peripheral(pin, PinMap_PWM);
-  uint32_t index = get_timer_index(Instance);
-  HardwareTimer *TMR = (HardwareTimer *)(HardwareTimer_Handle[index]->__this);
+  // Fast path: pin already resolved (the normal case -- called every control-loop tick
+  // with one of a small fixed set of pins).
+  for (int i = 0; i < 4; i++)
+  {
+    if (pwm_cache[i].pin == ulPin)
+    {
+      pwm_cache[i].tmr->setCaptureCompare(pwm_cache[i].channel, value, (TimerCompareFormat_t)resolution);
+      return;
+    }
+  }
 
-  uint32_t channel = STM_PIN_CHANNEL(pinmap_function(pin, PinMap_PWM));
-  TMR->setCaptureCompare(channel, value, (TimerCompareFormat_t)resolution);
+  // Slow path: first call for this pin. Resolve once, cache it, and use it immediately.
+  for (int i = 0; i < 4; i++)
+  {
+    if (pwm_cache[i].pin == -1)
+    {
+      HardwareTimer *tmr;
+      uint32_t channel;
+      pwm_resolve(ulPin, &tmr, &channel);
+
+      pwm_cache[i].pin = ulPin;
+      pwm_cache[i].tmr = tmr;
+      pwm_cache[i].channel = channel;
+
+      tmr->setCaptureCompare(channel, value, (TimerCompareFormat_t)resolution);
+      return;
+    }
+  }
+
+  // Cache full (more than 4 distinct PWM pins in use) -- fall back to resolving every call.
+  HardwareTimer *tmr;
+  uint32_t channel;
+  pwm_resolve(ulPin, &tmr, &channel);
+  tmr->setCaptureCompare(channel, value, (TimerCompareFormat_t)resolution);
 }
 
 

@@ -73,23 +73,33 @@ unsigned int Combine_2_CAN_ID(unsigned int Node_ID, unsigned int Command_ID, boo
 
 
 /// @brief  Setup CAN bus hardware
+/// @details On failure, sets CAN_init_error and returns so UART stays usable
+/// (a bricked board with no CAN transceiver connected could otherwise never be
+/// reached over UART either).
 void Setup_CAN_bus()
 {
     bool ret = CANInit(CAN_1000KBPS, 2);
     if (!ret)
-        while (true)
-            ;
+        controller.CAN_init_error = 1;
 }
 
 
-/// @brief CAN protocol 
-/// @param Serialport 
+/// @brief CAN protocol
+/// @param Serialport
+/// @details Drains up to CAN_RX_BUDGET messages per call instead of just one (the 3-deep
+/// hardware FIFO can silently drop frames within a single loop() pass otherwise) or an
+/// unbounded while (which would let heavy bus traffic -- e.g. several other nodes'
+/// heartbeats on a shared multi-drop CAN bus -- starve UART_protocol/CAN_watchdog/
+/// CAN_heartbeat for as long as the bus stays busy).
 void CAN_protocol(Stream &Serialport)
 {
+    const int CAN_RX_BUDGET = 8; // > 3-deep HW FIFO, so a normal burst drains in one call
+    int processed = 0;
 
-    if (CANMsgAvail())
+    while (CANMsgAvail() && processed < CAN_RX_BUDGET)
     {
-        
+        processed++;
+
         /// Get CAN msg from buffer
         CANReceive(&CAN_RX_msg);
         /// Unpack CAN ID 

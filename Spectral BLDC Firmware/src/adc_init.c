@@ -22,7 +22,7 @@
 
 #include "adc_init.h"
 
-ADC_HandleTypeDef hadc1;
+// hadc1 is defined once in main.cpp; adc_init.h declares it extern for use here.
 
 /// @brief ADC1 init function
 void MX_ADC1_Init(void)

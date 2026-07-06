@@ -44,7 +44,7 @@ const float CURRENT_SENSE_CONSTANT_mV = ((ADC_MIDPOINT / ADC_MIDPOINT_BIT) / SEN
 bool parityCheck(uint16_t data);
 void Collect_data();
 float Get_current(int adc_value);
-int Get_voltage_mA(int adc_value);
+int Get_voltage_mV(int adc_value);
 int Get_current_mA(int adc_value);
 int Get_ADC_Value(int current_mA);
 void Position_mode();

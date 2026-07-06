@@ -32,6 +32,11 @@ public:
 
   void resetCommandAndArgument(char *command, char *argument);
 
+  // Set true when a complete line was received but rejected (too long, malformed, or not
+  // in the whitelist below); left false while a packet is still being buffered. Caller
+  // should check this after parse() returns false and clear it once handled.
+  bool lastCommandUnknown = false;
+
 private:
   char buffer[64];
   int bufferIndex;

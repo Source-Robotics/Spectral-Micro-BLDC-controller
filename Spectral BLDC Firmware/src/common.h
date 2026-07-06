@@ -114,6 +114,7 @@ typedef struct
     volatile bool Current_error = 0;     // We go past max current
     volatile bool ESTOP_error = 0;       // If we received estop command
     volatile bool Watchdog_error = 0;    // If we pass watchdog timeout time
+    volatile bool CAN_init_error = 0;    // Set if CAN peripheral failed to initialize; CAN bus is skipped, UART stays usable
 
     volatile int commutation = 0; // 0 is space vector, 1 is sine
 
@@ -172,6 +173,8 @@ typedef struct
     volatile bool calib_reset = false;
     volatile int Velocity_fwd = 0;
     volatile int Velocity_bwd = 0;
+    volatile int Align_stage = 0; // Calibrate_Angle_Offset_Align() progress: state index (0 = not running)
+    volatile int Align_point = 0; // sweep index within the current stage
 
     // Open loop movements
     volatile int microstep = 16;
@@ -245,7 +248,9 @@ typedef struct
     volatile int Reset_integral_accumulator = 0;
 
     // Position loop PID
-    volatile float Kp_p = 8;
+    // NOTE: these initializers must match Set_Default_config() (EEPROM.cpp) exactly --
+    // that function is authoritative (what a #Default/factory-reset board actually gets).
+    volatile float Kp_p = 11;
     volatile int Position_setpoint = 0;
     volatile float P_errSum = 0;
 
@@ -256,23 +261,23 @@ typedef struct
     volatile float Feedforward_speed = 0;
     volatile float Velocity_setpoint = 0; // -1.5
 
-    volatile float Velocity_limit = 80000;          // Clamp integrals to this  [TICKS/s]
+    volatile float Velocity_limit = 800000;         // Clamp integrals to this  [TICKS/s]
     volatile float Velocity_limit_error = 20000000; // [TICKS/s] ; Velocity when we will report error
 
     // current loop PID
     volatile float Ki = 0; // zero location
 
-    volatile float Kp_id = 2.67; // 2.67
-    volatile float Ki_id = 1.93; // 1.93
+    volatile float Kp_id = 3;
+    volatile float Ki_id = 1.5;
     volatile float Id_errSum;
     volatile float Id_setpoint = 0;
 
-    volatile float Kp_iq = 2.67; // 2.67 // 12.8
-    volatile float Ki_iq = 1.93; // 1.93 // 9
+    volatile float Kp_iq = 3;
+    volatile float Ki_iq = 1.5;
     volatile float Iq_errSum;
     volatile float Iq_setpoint;
 
-    volatile float Iq_current_limit = 1300;
+    volatile float Iq_current_limit = 1000;
     volatile float Id_current_limit = 0;
 
     volatile float Feedforward_current = 0;
