@@ -9,6 +9,10 @@ Spectral Micro is a brushless motor controller designed to offer affordable and 
 * Everything you need for developing high-performance robotic solutions is included.
 * It is ideal for gimbal motors, quadrupeds, robotic arms, and grippers. Check the list of tested motors [here!](https://source-robotics.github.io/Spectral-BLDC-docs/apage9_3_tested_motors/)
 
+> [!NOTE]
+> You can now tune your motors via [https://motorgui.com/](https://motorgui.com/)
+
+
 ## 🚀Where to buy?
 
 You can buy the Spectral Micro BLDC controller here: <br />
@@ -22,7 +26,7 @@ Spectral firmware is located [here](https://github.com/PCrnjak/Spectral-Micro-BL
 
 - [Official website](https://source-robotics.com/products/spectral-micro-bldc-controller)
 - [DOCS](https://source-robotics.github.io/Spectral-BLDC-docs/) Offers great starting guides with project examples + code 
-
+- [https://motorgui.com/](https://motorgui.com/)
 
 ### API and control
 - [GUI software ](https://github.com/PCrnjak/Spectral-motor-GUI)
