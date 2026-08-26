@@ -83,6 +83,8 @@ typedef struct
     volatile int Controller_mode = 0; // 0 -> idle, 1 -> Positon, 2 -> Speed, 3 -> Current, 4 -> PD, 5 -> Open-loop speed, 6 -> Gripper mode, 7-> Calibrate gripper, 8 -> Voltage Torque mode
     // 7 -> Gripper calib mode
 
+    volatile bool brake_coast = 0; // Idle-mode (Controller_mode == 0) phase behavior: 0 = coast (driver disabled, Hi-Z), 1 = brake (driver stays enabled, zero-voltage PWM vector shorts the phases together)
+
     volatile float Resistance = 0;       // Resistance of SINGLE PHASE of your BLDC motor
     volatile float Total_Resistance = 0; // = 2 * Resistance + 2 * R_sense + 2 *Rdson
     volatile float Inductance = 0;       // Inductance of SINGLE PHASE of your BLDC motor
@@ -175,6 +177,8 @@ typedef struct
     volatile int Velocity_bwd = 0;
     volatile int Align_stage = 0; // Calibrate_Angle_Offset_Align() progress: state index (0 = not running)
     volatile int Align_point = 0; // sweep index within the current stage
+    volatile int Spin_confirm_delta = 0;   // diagnostic: encoder ticks moved during the "confirm commutation" spin test, on failure
+    volatile int Spin_confirm_vbus_mV = 0; // diagnostic: VBUS_mV sampled at that same failure
 
     // Open loop movements
     volatile int microstep = 16;

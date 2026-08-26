@@ -383,6 +383,10 @@ bool SerialPacketParser::parse(char c, char *command, char *argument)
         {
           return true;
         }
+        else if (strcmp(command, "Brake") == 0)
+        {
+          return true;
+        }
 
         else
         {
@@ -733,6 +737,10 @@ bool SerialPacketParser::parse(char c, char *command, char *argument)
           return true;
         }
         else if (strcmp(command, "Iqoffset") == 0)
+        {
+          return true;
+        }
+        else if (strcmp(command, "Brake") == 0)
         {
           return true;
         }

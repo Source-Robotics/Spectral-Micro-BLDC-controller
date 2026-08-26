@@ -340,14 +340,37 @@ void IT_callback(void)
     switch (controller.Controller_mode)
     {
     case 0:
-      /// Sleep mode input.Logic high to enable device;
-      /// logic low to enter low-power sleep mode; internal pulldown
-      digitalWriteFast(SLEEP, LOW);
-      /// Reset input. Active-low reset input initializes internal logic, clears faults,
-      /// and disables the outputs, internal pulldown
-      digitalWriteFast(RESET, LOW);
-      controller.reset_pin_state = 0;
-      controller.sleep_pin_state = 0;
+      if (controller.brake_coast == 1)
+      {
+        /// Brake: keep the driver enabled and hold the zero-voltage PWM vector (all
+        /// three phases at the same duty cycle), which shorts the windings together
+        /// through the driver's complementary switches. Back-EMF drives the braking
+        /// current -- it is not actively current-limited here, so only enable this on
+        /// motors where phase resistance keeps that current within MAX_DRIVE_CURRENT
+        /// at the speeds this board is actually spinning at when brake is commanded.
+        if (controller.reset_pin_state == 0 && controller.sleep_pin_state == 0)
+        {
+          digitalWriteFast(SLEEP, HIGH);
+          digitalWriteFast(RESET, HIGH);
+          controller.reset_pin_state = 1;
+          controller.sleep_pin_state = 1;
+        }
+        pwm_set(PWM_CH1, PWM_MAX / 2, 13);
+        pwm_set(PWM_CH2, PWM_MAX / 2, 13);
+        pwm_set(PWM_CH3, PWM_MAX / 2, 13);
+      }
+      else
+      {
+        /// Coast: disable the driver entirely (Hi-Z outputs, freewheel).
+        /// Sleep mode input.Logic high to enable device;
+        /// logic low to enter low-power sleep mode; internal pulldown
+        digitalWriteFast(SLEEP, LOW);
+        /// Reset input. Active-low reset input initializes internal logic, clears faults,
+        /// and disables the outputs, internal pulldown
+        digitalWriteFast(RESET, LOW);
+        controller.reset_pin_state = 0;
+        controller.sleep_pin_state = 0;
+      }
       break;
     case 1:
       Position_mode();
@@ -787,6 +810,15 @@ void Update_IT_callback_calib()
   static int64_t _speed_accumulator = 0;
   static int Spin_duration = 8500; // In interrupt ticks = 8500 * 200us = 1.7s
 
+  // Spin-confirm probe angle bias: a pure-Uq command uses the still-uncalibrated
+  // encoder-derived angle directly, so how much of it lands on the true torque axis
+  // depends on this motor's actual (unknown) magnet-to-encoder mounting angle. Two
+  // trials 90 electrical degrees apart guarantee at least one lands within 45 degrees
+  // of the true q-axis (>=1/sqrt(2) ~= 70.7% of full command magnitude, for ANY true
+  // offset -- max(|cos|,|sin|) >= 1/sqrt(2) always), comfortably enough to move a motor
+  // that would otherwise pass this test outright.
+  static int probe_attempt = 0;
+
   static int KV_ticks = 0;
   static int KV_duration = 5000;
   static int64_t KV_speed_accumulator = 0;
@@ -1173,6 +1205,8 @@ Confirm commutation, then find the angle offset (reversed-wiring-agnostic)
     else
     {
       Phase_ticks = Phase_ticks + 1;
+      // Which angle bias this attempt probes with -- see probe_attempt's declaration above.
+      float probe_bias = (probe_attempt == 0) ? 0.0f : (PI / 2.0f);
       switch (Phase_step)
       {
       case 0: // Small delay, hold the rotor at zero torque before the spin test
@@ -1184,7 +1218,7 @@ Confirm commutation, then find the angle offset (reversed-wiring-agnostic)
         else
         {
           Collect_data2();
-          dq0_abc_variables(controller.Electric_Angle);
+          dq0_abc_variables(controller.Electric_Angle + probe_bias);
           dq0_fast_int(controller.Sense1_mA, controller.Sense2_mA, controller.Sense3_mA, &FOC.Id, &FOC.Iq);
           PID.Ud_setpoint = 0;
           PID.Uq_setpoint = 0;
@@ -1202,7 +1236,7 @@ Confirm commutation, then find the angle offset (reversed-wiring-agnostic)
         if (Phase_ticks < Spin_duration)
         {
           Collect_data2();
-          dq0_abc_variables(controller.Electric_Angle);
+          dq0_abc_variables(controller.Electric_Angle + probe_bias);
           dq0_fast_int(controller.Sense1_mA, controller.Sense2_mA, controller.Sense3_mA, &FOC.Id, &FOC.Iq);
           PID.Ud_setpoint = 0;
           PID.Uq_setpoint = controller.Phase_voltage;
@@ -1217,19 +1251,35 @@ Confirm commutation, then find the angle offset (reversed-wiring-agnostic)
           // tell the user to switch phases here.
           if (abs(delta) > half_rotation_ticks)
           {
-            Phase_step = 3; // moved far enough in EITHER direction
+            probe_attempt = 0; // reset for the next #Cal run
+            Phase_step = 3;    // moved far enough in EITHER direction
           }
           else
           {
-            // barely moved -> commutation genuinely not working
+            // Diagnostic: stash how far it actually got for Calib_report() (main-loop context)
+            // to print later -- printing directly from here (the calibration ISR) races with
+            // Calib_report()'s own prints on the same UART and tears the output.
+            controller.Spin_confirm_delta = delta;
+            controller.Spin_confirm_vbus_mV = controller.VBUS_mV;
             PID.Uq_setpoint = 0;
             Voltage_Torque_mode();
             Phase_ticks = 0;
             Phase_start = 1;
             Phase_step = 0;
-            controller.Kt_cal_status = 1;
-            controller.Phase_order_status = 1;
-            controller.Calib_error = 1;
+
+            if (probe_attempt == 0)
+            {
+              // This bias produced ~no motion -- try again 90 degrees away before giving up.
+              probe_attempt = 1;
+            }
+            else
+            {
+              // Both biases tried, neither moved the motor -> commutation genuinely not working.
+              probe_attempt = 0; // reset for the next #Cal run
+              controller.Kt_cal_status = 1;
+              controller.Phase_order_status = 1;
+              controller.Calib_error = 1;
+            }
           }
         }
         break;
@@ -1608,6 +1658,18 @@ void Calib_report(Stream &Serialport)
         // still worked, so this points at the closed-loop current path specifically).
         Serialport.println("Commutation/alignment check failed!");
         Serialport.println("Motor did not respond as expected to a current command. Check wiring/encoder/current sensing and try #Cal again.");
+        // Diagnostic: only meaningful if this failure came from the "confirm commutation" spin
+        // test (0 means it failed elsewhere, in the angle-offset align/sweep instead).
+        if (controller.Spin_confirm_delta != 0)
+        {
+          Serialport.print("Spin-confirm delta: ");
+          Serialport.print(controller.Spin_confirm_delta);
+          Serialport.print(" ticks (need > ");
+          Serialport.print(CPR / 2);
+          Serialport.print("), Vbus: ");
+          Serialport.print(controller.Spin_confirm_vbus_mV);
+          Serialport.println(" mV");
+        }
       }
       else if (controller.Phase_order_status == 2)
       {

@@ -479,6 +479,19 @@ void UART_protocol(Stream &Serialport)
                 Serialport.println("Idle");
             }
 
+            // Set/Get idle-mode phase behavior: 0 = coast (driver disabled, Hi-Z),
+            // 1 = brake (driver stays enabled, zero-voltage PWM vector shorts the phases).
+            // Only takes effect once idle (Controller_mode == 0) -- send Idle first/after.
+            else if (strcmp(command, "Brake") == 0)
+            {
+                if (strlen(argument) != 0)
+                {
+                    controller.brake_coast = (atoi(argument) != 0) ? 1 : 0;
+                }
+                Serialport.print("Brake ");
+                Serialport.println(controller.brake_coast);
+            }
+
             // Enter calibration mode
             else if (strcmp(command, "Cal") == 0)
             {
@@ -490,6 +503,7 @@ void UART_protocol(Stream &Serialport)
                     controller.sleep_pin_state = 1;
                 }
                 controller.Calibration = 1;
+                controller.Spin_confirm_delta = 0; // diagnostic: clear any stale value from a prior #Cal attempt
                 Ticker_detach(TIM3);
                 Ticker_init(TIM3, LOOP_FREQ, Update_IT_callback_calib);
             }
@@ -893,6 +907,7 @@ void UART_protocol(Stream &Serialport)
                 Serialport.println("  PD <ticks>   Impedance (PD) mode setpoint");
                 Serialport.println("  Uq/Ud <mV>   Voltage-torque mode");
                 Serialport.println("  Idle         Go to idle");
+                Serialport.println("  Brake <0|1>  Idle phase behavior: 0=coast (Hi-Z), 1=brake (short)");
                 Serialport.println("  Openloop <e> Open-loop speed mode (electrical speed)");
                 Serialport.println("");
                 Serialport.println("Calibration:");
