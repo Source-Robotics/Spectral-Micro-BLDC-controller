@@ -1,0 +1,23 @@
+cff-version: 1.2.0
+message: "If you use Spectral Micro in your work, please cite it as below."
+title: "Spectral Micro: compact FOC controller for brushless motors"
+type: software
+authors:
+  - name: Source Robotics
+    website: https://source-robotics.com
+  - given-names: Petar
+    family-names: Crnjak
+abstract: "A compact field-oriented control controller for brushless (BLDC) motors, with a 14-bit magnetic encoder, CAN and UART, and open-source firmware."
+version: V107
+date-released: 2026-08-26
+repository-code: https://github.com/Source-Robotics/Spectral-Micro-BLDC-controller
+url: https://docs.source-robotics.com/Spectral-BLDC-docs/
+license: GPL-3.0
+keywords:
+  - motor controller
+  - BLDC
+  - field-oriented control
+  - FOC
+  - CAN bus
+  - STM32
+  - robotics
