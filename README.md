@@ -25,7 +25,7 @@ Spectral firmware is located [here](https://github.com/Source-Robotics/Spectral-
 
 
 ### API and control
-- [GUI software ](https://github.com/Source-Robotics/Spectral-motor-GUI)
+- [GUI software: Motor GUI](https://motorgui.com/), in the browser ([guide](https://docs.source-robotics.com/Spectral-BLDC-docs/latest/05-setup/motor-gui/))
 - [Python API & Examples](https://github.com/Source-Robotics/Spectral-BLDC-Python/tree/main)
 - [Source Robotics toolbox](https://github.com/Source-Robotics/Source-Robotics-Toolbox/tree/main) 
 - [SimpleFOC port](https://github.com/Source-Robotics/Spectral-Micro-Simple-FOC)
