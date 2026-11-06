@@ -81,6 +81,8 @@ void Setup_CAN_bus()
     bool ret = CANInit(CAN_1000KBPS, 2);
     if (!ret)
         controller.CAN_init_error = 1;
+    else
+        CANSetNodeFilter(controller.CAN_ID);
 }
 
 
@@ -650,6 +652,7 @@ void CAN_protocol(Stream &Serialport)
                     uint8_t new_can_id = CAN_RX_msg.data[0];
                     if (spectral_can_id_is_valid(new_can_id)) {
                         controller.CAN_ID = new_can_id;
+                        CANSetNodeFilter(new_can_id);
                         controller.Wrong_DL = 0;
                         #if (DEBUG_COMS > 0)
                         Serialport.print("New CAN ID is: ");

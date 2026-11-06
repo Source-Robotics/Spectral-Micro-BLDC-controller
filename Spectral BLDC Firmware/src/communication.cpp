@@ -623,6 +623,9 @@ void UART_protocol(Stream &Serialport)
             {
                 Serialport.print("Loaded default config!");
                 Set_Default_config();
+                // The defaults carry a CAN id; the hardware filter follows it.
+                if (controller.CAN_init_error == 0)
+                    CANSetNodeFilter(controller.CAN_ID);
             }
 
             // Get termistor temperature in degrees
@@ -950,6 +953,10 @@ void UART_protocol(Stream &Serialport)
                 Serialport.println(" us");
                 Serialport.print("CAN ID is: ");
                 Serialport.println(controller.CAN_ID);
+                Serialport.print("CAN RX overruns: ");
+                Serialport.println(CAN_rx_overruns);
+                Serialport.print("CAN TX dropped: ");
+                Serialport.println(CAN_tx_dropped);
                 if (controller.Calibrated == 0)
                 {
                     Serialport.println("Not calibrated");
@@ -1238,6 +1245,8 @@ void UART_protocol(Stream &Serialport)
                     else
                     {
                         controller.CAN_ID = temp_var;
+                        if (controller.CAN_init_error == 0)
+                            CANSetNodeFilter(controller.CAN_ID);
                     }
                 }
 

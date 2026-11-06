@@ -71,6 +71,10 @@ typedef struct {
 #define CAN_STM32_ERROR_UNSUPPORTED_FRAME_FORMAT 1003
 
 
+#define STM32_CAN_TSR_TME0              (1U << 26U) // Transmit mailbox 0 empty
+#define STM32_CAN_TSR_TME1              (1U << 27U) // Transmit mailbox 1 empty
+#define STM32_CAN_TSR_TME2              (1U << 28U) // Transmit mailbox 2 empty
+#define STM32_CAN_TSR_TME_ANY           (STM32_CAN_TSR_TME0 | STM32_CAN_TSR_TME1 | STM32_CAN_TSR_TME2)
 #define STM32_CAN_TIR_TXRQ              (1U << 0U)  // Bit 0: Transmit Mailbox Request
 #define STM32_CAN_RIR_RTR               (1U << 1U)  // Bit 1: Remote Transmission Request
 #define STM32_CAN_RIR_IDE               (1U << 2U)  // Bit 2: Identifier Extension
@@ -86,9 +90,14 @@ int16_t ComputeCANTimings(const uint32_t peripheral_clock_rate,
 
 void printRegister(const char * buf, uint32_t reg);
 void CANSetFilter(uint8_t index, uint8_t scale, uint8_t mode, uint8_t fifo, uint32_t bank1, uint32_t bank2);
+void CANSetNodeFilter(uint8_t node_id);
 bool CANInit(BITRATE bitrate, int remap);
 void CANReceive(CAN_msg_t* CAN_rx_msg);
-void CANSend(CAN_msg_t* CAN_tx_msg);
+/// False if no mailbox freed within 1 ms (counted in CAN_tx_dropped).
+bool CANSend(CAN_msg_t* CAN_tx_msg);
+/// Receive FIFO overruns and dropped transmissions since boot.
+extern volatile uint32_t CAN_rx_overruns;
+extern volatile uint32_t CAN_tx_dropped;
 uint8_t CANMsgAvail();
 
 #endif  // CAN_UTILS_H

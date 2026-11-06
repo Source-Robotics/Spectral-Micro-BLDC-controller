@@ -156,6 +156,15 @@ void CANSetFilter(uint8_t index, uint8_t scale, uint8_t mode, uint8_t fifo, uint
 
 }
 
+/// Accept only frames addressed to this node (node id = top 4 bits of the 11-bit id).
+void CANSetNodeFilter(uint8_t node_id) {
+  uint32_t id   = ((uint32_t)(node_id & 0xFU) << 7U) << 21U;
+  uint32_t mask = ((uint32_t)0xFU << 7U) << 21U;
+  CAN1->FMR |= 0x1UL;                          // Filter initialization mode
+  CANSetFilter(0, 1, 0, 0, id, mask);
+  CAN1->FMR &= ~(0x1UL);
+}
+
 /// @brief 
 /// @param bitrate 
 /// @param remap 
@@ -238,7 +247,8 @@ bool CANInit(BITRATE bitrate, int remap)
   while (!(CAN1->MSR & 0x1UL));         // Wait for Initialization mode
 
   //CAN1->MCR = 0x51UL;                 // Hardware initialization(No automatic retransmission)
-  CAN1->MCR = 0x41UL;                   // Hardware initialization(With automatic retransmission)
+  // TXFP: transmit mailboxes go out in request order, so replies are not reordered.
+  CAN1->MCR = 0x45UL;
    
   // Set bit timing register 
   CAN_bit_timing_config_t timings;
@@ -324,6 +334,11 @@ void CANReceive(CAN_msg_t* CAN_rx_msg)
   CAN_rx_msg->data[6] = 0xFFUL & (CAN1->sFIFOMailBox[0].RDHR >> 16);
   CAN_rx_msg->data[7] = 0xFFUL & (CAN1->sFIFOMailBox[0].RDHR >> 24);
 
+  // Count an overrun before the release below clears its flag.
+  if (CAN1->RF0R & 0x10UL) {
+    CAN_rx_overruns = CAN_rx_overruns + 1;
+    CAN1->RF0R |= 0x10UL;
+  }
   // Release FIFO 0 output mailbox.
   // Make the next incoming message available.
   CAN1->RF0R |= 0x20UL;
@@ -331,10 +346,11 @@ void CANReceive(CAN_msg_t* CAN_rx_msg)
 
 /// @brief 
 /// @param CAN_tx_msg 
-void CANSend(CAN_msg_t* CAN_tx_msg)
-{
-  volatile int count = 0;
+volatile uint32_t CAN_rx_overruns = 0;
+volatile uint32_t CAN_tx_dropped = 0;
 
+bool CANSend(CAN_msg_t* CAN_tx_msg)
+{
   uint32_t out = 0;
   if (CAN_tx_msg->format == EXTENDED_FORMAT) { // Extended frame format
       out = ((CAN_tx_msg->id & CAN_EXT_ID_MASK) << 3U) | STM32_CAN_TIR_IDE;
@@ -348,33 +364,31 @@ void CANSend(CAN_msg_t* CAN_tx_msg)
       out |= STM32_CAN_TIR_RTR;
   }
 
-  CAN1->sTxMailBox[0].TDTR &= ~(0xF);
-  CAN1->sTxMailBox[0].TDTR |= CAN_tx_msg->len & 0xFUL;
-  
-  CAN1->sTxMailBox[0].TDLR  = (((uint32_t) CAN_tx_msg->data[3] << 24) |
+  // Wait at most 1 ms for a free mailbox; drop the frame rather than stall loop().
+  uint32_t started = micros();
+  while (!(CAN1->TSR & STM32_CAN_TSR_TME_ANY)) {
+    if (micros() - started > 1000U) {
+      CAN_tx_dropped = CAN_tx_dropped + 1;
+      return false;
+    }
+  }
+  uint8_t mb = (CAN1->TSR >> 24U) & 0x3U;      // CODE: the mailbox to use next
+
+  CAN1->sTxMailBox[mb].TDTR &= ~(0xF);
+  CAN1->sTxMailBox[mb].TDTR |= CAN_tx_msg->len & 0xFUL;
+
+  CAN1->sTxMailBox[mb].TDLR = (((uint32_t) CAN_tx_msg->data[3] << 24) |
                                ((uint32_t) CAN_tx_msg->data[2] << 16) |
                                ((uint32_t) CAN_tx_msg->data[1] <<  8) |
                                ((uint32_t) CAN_tx_msg->data[0]      ));
-  CAN1->sTxMailBox[0].TDHR  = (((uint32_t) CAN_tx_msg->data[7] << 24) |
+  CAN1->sTxMailBox[mb].TDHR = (((uint32_t) CAN_tx_msg->data[7] << 24) |
                                ((uint32_t) CAN_tx_msg->data[6] << 16) |
                                ((uint32_t) CAN_tx_msg->data[5] <<  8) |
                                ((uint32_t) CAN_tx_msg->data[4]      ));
 
   // Send Go
-  CAN1->sTxMailBox[0].TIR = out | STM32_CAN_TIR_TXRQ;
-
-  //Wait until the mailbox is empty
-  //while(CAN1->sTxMailBox[0].TIR & 0x1UL && count++ < 1000000);
-
-  /*
-  // The mailbox don't becomes empty while loop
-  if (CAN1->sTxMailBox[0].TIR & 0x1UL) {
-    Serial.println("Send Fail");
-    Serial.println(CAN1->ESR);
-    Serial.println(CAN1->MSR);
-    Serial.println(CAN1->TSR);
-  }
-  */
+  CAN1->sTxMailBox[mb].TIR = out | STM32_CAN_TIR_TXRQ;
+  return true;
 }
 
 /// @brief 
