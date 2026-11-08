@@ -1256,7 +1256,7 @@ void UART_protocol(Stream &Serialport)
                 Serialport.print(" s; identified cogging ");
                 Serialport.print(cogcal_ripple_x10 / 10.0f, 1);
                 Serialport.println(" mA rms");
-                if (st == COGCAL_DONE)
+                if (st == COGCAL_DONE || st == COGCAL_DONE_NO_TRIM)
                     for (int s = 0; s < COGGING_HARMONICS; s++)
                     {
                         Serialport.print("  h");
