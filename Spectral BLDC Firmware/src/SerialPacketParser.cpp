@@ -20,6 +20,7 @@
 /* Includes ------------------------------------------------------------------*/
 
 #include "SerialPacketParser.h"
+#include "utils.h"
 
 SerialPacketParser::SerialPacketParser()
 {
@@ -55,10 +56,14 @@ bool SerialPacketParser::parse(char c, char *command, char *argument)
     packetComplete = false;
 
     // Extract the command and argument
-    if (sscanf(buffer, "#%19s %19s", command, argument) == 2)
+    // "#Command argument": the command and argument words, each in its own 20-byte buffer
+    const char *rest = (buffer[0] == '#') ? next_word(buffer + 1, command, 20) : NULL;
+    if (rest != NULL && next_word(rest, argument, 20) != NULL)
     {
-      // Dispatch based on the parsed command
-      if (strlen(command) + strlen(argument) <= 20)
+      // Dispatch based on the parsed command. Command and argument each have their own 20-byte buffer
+      // and %19s already caps each at 19 characters; the combined limit was 20, which refused a full
+      // "#WdFb 10000,-1200,2000,3", so it is now the sum of the two.
+      if (strlen(command) + strlen(argument) <= 38)
       {
 
         // Dispatch based on the parsed command
@@ -331,6 +336,26 @@ bool SerialPacketParser::parse(char c, char *command, char *argument)
         {
           return true;
         }
+        else if (strcmp(command, "Tool") == 0)
+        {
+          return true;
+        }
+        else if (strcmp(command, "WdFb") == 0)
+        {
+          return true;
+        }
+        else if (strcmp(command, "Product") == 0)
+        {
+          return true;
+        }
+        else if (strcmp(command, "Encal") == 0)
+        {
+          return true;
+        }
+        else if (strcmp(command, "Cogcal") == 0)
+        {
+          return true;
+        }
         else if (strcmp(command, "Gripcal") == 0)
         {
           return true;
@@ -405,7 +430,7 @@ bool SerialPacketParser::parse(char c, char *command, char *argument)
       }
     }
 
-    else if (sscanf(buffer, "#%19s", command) == 1)
+    else if (rest != NULL) // "#Command" alone
     {
       if (strlen(command) <= 20)
       {
@@ -685,6 +710,26 @@ bool SerialPacketParser::parse(char c, char *command, char *argument)
           return true;
         }
         else if (strcmp(command, "Gripper") == 0)
+        {
+          return true;
+        }
+        else if (strcmp(command, "Tool") == 0)
+        {
+          return true;
+        }
+        else if (strcmp(command, "WdFb") == 0)
+        {
+          return true;
+        }
+        else if (strcmp(command, "Product") == 0)
+        {
+          return true;
+        }
+        else if (strcmp(command, "Encal") == 0)
+        {
+          return true;
+        }
+        else if (strcmp(command, "Cogcal") == 0)
         {
           return true;
         }

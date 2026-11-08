@@ -60,10 +60,13 @@ typedef struct
 
     volatile int ROTATIONS;                         // Number of full rotations that motor did
     volatile int Velocity_Filter;                   // Filtered velocity of the motor
+    volatile int Velocity_Average;                  // the 20-sample moving average, always: calibration and
+                                                    // the gripper's stop detection were tuned with it
     volatile int Velocity;                          //  velocity of the motor
     volatile float Torque_estimate;                 // Kt * Iq
     volatile int pole_pairs = 11;                   // Number of pole pairs of your BLDC motor
-    volatile float current_control_bandwidth = 500; // default 200 HZ; Will set PI gains for Q and D current loops based on phase resistance
+    volatile float current_control_bandwidth = CURRENT_BANDWIDTH_DEFAULT; // Hz: the current PI gains come from R, L
+                                    // and this (Current_gains_from_RL), at calibration or with parameter 49
                                                     // phase inductance and loop time
                                                     // RAD/s = HZ * 2pi
 
@@ -102,7 +105,34 @@ typedef struct
 
     volatile int watchdog_time_ms = 0;
     volatile bool watchdog_reset = 1;
-    volatile int watchdog_action = 0;   // Hold position, Idle, brake
+    volatile int watchdog_action = 0;   // 0 legacy, 1 hold, 2 brake, 3 coast, 4 descend (watchdog_action.h)
+    // Watchdog fallback for hold/descend, settings block 2 (PARAM_WD_*, #WdFb)
+    volatile int wd_fallback_time_ms = 2000; // how long hold/descend may run before the after-action
+    volatile int wd_fallback_current = 0;    // mA, descend: the current applied (signed)
+    volatile int wd_fallback_speed = 1000;   // ticks/s, descend: the speed cap in either direction
+    volatile int wd_after_action = 0;        // after hold/descend: 0 legacy, 2 brake, 3 coast
+    volatile int tool_id = 0;                // what the drive is built into: 0 none, 1 SSG-48, 11-33 MSG, 200-254 custom
+    volatile bool eeprom_block2_ok = 0;      // the EEPROM has the bank settings block 2 lives in (0x51)
+    volatile int board_product = 0;          // product lock stamp in block 2: 1 STEPFOC, 2 Spectral, 0 none
+    volatile bool wrong_product = 0;         // this firmware is on the other product's board: it drives nothing
+    volatile int sense1_offset = 0;          // current-sense zero of channel 1, ADC counts from 2048 (start-up)
+    volatile int sense2_offset = 0;          // current-sense zero of channel 2
+    volatile int sense1_offset_off = 0;      // the bridge-off zeros, kept for comparison (parameters 40, 41)
+    volatile int sense2_offset_off = 0;
+    volatile uint8_t sense_zero_switching = 0; // SENSE_ZERO_SW_*: the zero measured with the bridge switching
+    volatile int sense1_offset_sw = 0;       // the switching zeros, when measured (parameters 47, 48)
+    volatile int sense2_offset_sw = 0;
+    volatile uint16_t comm_delay_us = 0; // parameter 64: commutation delay compensation, us (0 = off)
+    volatile uint16_t input_filter_hz = 0;  // parameter 74: the position input filter, Hz (0 = off)
+    volatile uint16_t vel_int_deadband = 0; // parameter 75: the velocity integral's deadband, ticks (0 = off)
+    volatile uint8_t fast_trig = 0;      // parameter 65: 1 the transforms' sin/cos from the integer table (it was
+                                         // 1.6 us slower than qfplib on the bench, batch 13)
+    volatile uint8_t speed_estimator = SPEED_ESTIMATOR_DEFAULT;          // parameter 50
+    volatile uint16_t speed_pll_bandwidth = SPEED_PLL_BANDWIDTH_DEFAULT; // parameter 51, Hz
+    volatile bool sense_zero_ok = 0;         // the start-up zero was measured and within SENSE_ZERO_MAX_DEV
+    volatile bool eeprom_block3_ok = 0;      // the EEPROM answers at 0x53, so anti-cogging block 3 can be saved
+    volatile bool eeprom_block4_ok = 0;      // the EEPROM answers at 0x54, so the encoder block can be saved
+    volatile bool cogging_saved = 0;         // the anti-cogging in RAM is the one in EEPROM block 3
     volatile int Heartbeat_rate_ms = 0; // Motor controller will send data every Heartbeat_rate_ms
     volatile bool Send_heartbeat = 0;
 
@@ -208,6 +238,8 @@ typedef struct
     volatile float U2_normalized;
     volatile float U3_normalized;
 
+    volatile float delay_c = 1.0f; // the commutation delay rotation, cos and sin (Comm_delay_update)
+    volatile float delay_s = 0.0f;
     volatile float sine_value;   // value of sine
     volatile float cosine_value; // value of cosine
 

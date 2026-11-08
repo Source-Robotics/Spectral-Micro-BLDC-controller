@@ -73,6 +73,17 @@ void Voltage_CAN();
 
 void Device_info_CAN();
 
+bool Param_get(uint8_t param, int32_t *value);
+
+bool Param_set(uint8_t param, int32_t value);
+bool Param_is_float(uint8_t param); // travels as a float's bits
+
+void Param_value_CAN(uint8_t param);
+
+void Identity_CAN();
+
+void Telemetry_CAN();
+
 void Encoder_data_CAN();
 
 void Current_data_CAN();

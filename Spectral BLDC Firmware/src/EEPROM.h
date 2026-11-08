@@ -71,6 +71,19 @@ void Write_config();
 
 void Set_Default_config();
 
+/// Clamp the settings block 2 values in RAM (tool id, watchdog fallback) to what the firmware accepts.
+void Settings2_sanitize();
+
+/// Product lock (see EEPROM.cpp): checked before read_config(); stamping and the UART override.
+bool Product_board_is_other();
+void Load_can_id_only();
+void Product_stamp_at_boot();
+void Product_set_stamp(int product);
+void Read_cogging_map();
+void Write_cogging_map();
+void Read_encoder_map();
+void Write_encoder_map();
+
 
 
 #endif

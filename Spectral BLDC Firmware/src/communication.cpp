@@ -20,6 +20,12 @@
 /* Includes ------------------------------------------------------------------*/
 
 #include "communication.h"
+#include "cogging.h"
+#include "cogcal.h"
+#include "encal.h"
+#include "communication_CAN.h" // Param_get, Param_set, Param_is_float (#Par)
+void Uart_param_print(Stream &Serialport, uint8_t n, bool say_unknown);
+void Uart_features_print(Stream &Serialport);
 #include "bootloader_config.h"
 
 SerialPacketParser parser;
@@ -57,7 +63,7 @@ void UART_protocol(Stream &Serialport)
                         PID.Iq_errSum = 0;
                         PID.Id_errSum = 0;
                     }
-                    PID.Iq_setpoint = atof(argument);
+                    PID.Iq_setpoint = parse_float(argument);
                     controller.Controller_mode = 3;
                     if (controller.reset_pin_state == 0 && controller.sleep_pin_state == 0)
                     {
@@ -78,7 +84,7 @@ void UART_protocol(Stream &Serialport)
 
                 if (strlen(argument) != 0)
                 {
-                    PID.Id_setpoint = atof(argument);
+                    PID.Id_setpoint = parse_float(argument);
                 }
 
                 Serialport.print("Id ");
@@ -295,7 +301,7 @@ void UART_protocol(Stream &Serialport)
             {
                 if (strlen(argument) != 0)
                 {
-                    PID.Kp_p = atof(argument);
+                    PID.Kp_p = parse_float(argument);
                 }
                 Serialport.print("Kpp ");
                 Serialport.println(PID.Kp_p, 5);
@@ -306,7 +312,7 @@ void UART_protocol(Stream &Serialport)
             {
                 if (strlen(argument) != 0)
                 {
-                    PID.KP = atof(argument);
+                    PID.KP = parse_float(argument);
                 }
                 Serialport.print("KP ");
                 Serialport.println(PID.KP, 6);
@@ -317,7 +323,7 @@ void UART_protocol(Stream &Serialport)
             {
                 if (strlen(argument) != 0)
                 {
-                    PID.KD = atof(argument);
+                    PID.KD = parse_float(argument);
                 }
                 Serialport.print("KD ");
                 Serialport.println(PID.KD, 6);
@@ -329,7 +335,7 @@ void UART_protocol(Stream &Serialport)
 
                 if (strlen(argument) != 0)
                 {
-                    PID.Kp_v = atof(argument);
+                    PID.Kp_v = parse_float(argument);
                 }
                 Serialport.print("Kpv ");
                 Serialport.println(PID.Kp_v, 5);
@@ -342,7 +348,7 @@ void UART_protocol(Stream &Serialport)
 
                 if (strlen(argument) != 0)
                 {
-                    PID.Kp_iq = atof(argument);
+                    PID.Kp_iq = parse_float(argument);
                     PID.Kp_id = PID.Kp_iq;
                 }
                 Serialport.print("Kpiq ");
@@ -355,7 +361,7 @@ void UART_protocol(Stream &Serialport)
 
                 if (strlen(argument) != 0)
                 {
-                    PID.Kp_id = atof(argument);
+                    PID.Kp_id = parse_float(argument);
                 }
                 Serialport.print("Kpid ");
                 Serialport.println(PID.Kp_id, 5);
@@ -367,7 +373,7 @@ void UART_protocol(Stream &Serialport)
 
                 if (strlen(argument) != 0)
                 {
-                    PID.Ki_v = atof(argument);
+                    PID.Ki_v = parse_float(argument);
                 }
                 Serialport.print("Kiv ");
                 Serialport.println(PID.Ki_v, 5);
@@ -380,7 +386,7 @@ void UART_protocol(Stream &Serialport)
 
                 if (strlen(argument) != 0)
                 {
-                    PID.Ki_iq = atof(argument);
+                    PID.Ki_iq = parse_float(argument);
                     PID.Ki_id = PID.Ki_iq;
                 }
                 Serialport.print("Kiiq ");
@@ -393,7 +399,7 @@ void UART_protocol(Stream &Serialport)
 
                 if (strlen(argument) != 0)
                 {
-                    PID.Ki_id = atof(argument);
+                    PID.Ki_id = parse_float(argument);
                 }
                 Serialport.print("Kiid ");
                 Serialport.println(PID.Ki_id, 5);
@@ -405,7 +411,7 @@ void UART_protocol(Stream &Serialport)
 
                 if (strlen(argument) != 0)
                 {
-                    controller.Resistance = atof(argument);
+                    controller.Resistance = parse_float(argument);
                 }
                 Serialport.print("R ");
                 Serialport.println(controller.Resistance, 5);
@@ -417,7 +423,7 @@ void UART_protocol(Stream &Serialport)
 
                 if (strlen(argument) != 0)
                 {
-                    controller.Inductance = atof(argument);
+                    controller.Inductance = parse_float(argument);
                 }
                 Serialport.print("L ");
                 Serialport.println(controller.Inductance, 5);
@@ -429,7 +435,7 @@ void UART_protocol(Stream &Serialport)
 
                 if (strlen(argument) != 0)
                 {
-                    controller.Kt = atof(argument);
+                    controller.Kt = parse_float(argument);
                 }
                 Serialport.print("Kt ");
                 Serialport.println(controller.Kt, 5);
@@ -441,7 +447,7 @@ void UART_protocol(Stream &Serialport)
 
                 if (strlen(argument) != 0)
                 {
-                    controller.KV = atof(argument);
+                    controller.KV = parse_float(argument);
                 }
                 Serialport.print("KV ");
                 Serialport.println(controller.KV, 5);
@@ -465,7 +471,7 @@ void UART_protocol(Stream &Serialport)
 
                 if (strlen(argument) != 0)
                 {
-                    controller.flux_linkage = atof(argument);
+                    controller.flux_linkage = parse_float(argument);
                 }
                 Serialport.print("Flux ");
                 Serialport.println(controller.flux_linkage, 5);
@@ -493,8 +499,11 @@ void UART_protocol(Stream &Serialport)
             }
 
             // Enter calibration mode
-            else if (strcmp(command, "Cal") == 0)
+            // #Cal: the calibration, then what parameter 56 adds (STEPFOC default: the encoder table and the
+            // anti-cogging, then save); #Calonly: the calibration alone (batch 20)
+            else if (strcmp(command, "Cal") == 0 || strcmp(command, "Calonly") == 0)
             {
+                Encal_skip_next_after_calibration(strcmp(command, "Calonly") == 0);
                 if (controller.reset_pin_state == 0 && controller.sleep_pin_state == 0)
                 {
                     digitalWriteFast(SLEEP, HIGH);
@@ -514,7 +523,7 @@ void UART_protocol(Stream &Serialport)
 
                 if (strlen(argument) != 0)
                 {
-                    controller.theta_offset = atof(argument);
+                    controller.theta_offset = parse_float(argument);
                 }
                 Serialport.print("Offset ");
                 Serialport.println(controller.theta_offset, 5);
@@ -757,6 +766,10 @@ void UART_protocol(Stream &Serialport)
                 {
                     Serialport.println("Watchdog error");
                 }
+                if (controller.wrong_product == 1)
+                {
+                    Serialport.println("Wrong firmware for this board (product lock)");
+                }
                 // if (controller.Activated == 1)
                 //{
                 //  Serialport.println("Controller is activated");
@@ -830,10 +843,21 @@ void UART_protocol(Stream &Serialport)
 
                 if (strlen(argument) != 0)
                 {
-                    controller.current_control_bandwidth = atof(argument);
+                    float bw = parse_float(argument);
+                    if (bw >= CURRENT_BANDWIDTH_MIN && bw <= CURRENT_BANDWIDTH_MAX)
+                    {
+                        float before = controller.current_control_bandwidth;
+                        controller.current_control_bandwidth = bw;
+                        if (!Current_gains_from_RL()) // the gains follow at once, as with CAN parameter 49
+                            controller.current_control_bandwidth = before;
+                    }
                 }
                 Serialport.print("Current loop bandwidth: ");
                 Serialport.println(controller.current_control_bandwidth, 5);
+                Serialport.print("Kp_iq = ");
+                Serialport.print(PID.Kp_iq, 5);
+                Serialport.print(", Ki_iq = ");
+                Serialport.println(PID.Ki_iq, 5);
             }
 
             // Set/get voltage used when looking for resistance value
@@ -854,7 +878,7 @@ void UART_protocol(Stream &Serialport)
 
                 if (strlen(argument) != 0)
                 {
-                    controller.Calibration_power = atof(argument);
+                    controller.Calibration_power = parse_float(argument);
                 }
                 Serialport.print("Max Power dissipation: ");
                 Serialport.println(controller.Calibration_power, 5);
@@ -878,7 +902,7 @@ void UART_protocol(Stream &Serialport)
 
                 if (strlen(argument) != 0)
                 {
-                    controller.Open_loop_speed = atof(argument);
+                    controller.Open_loop_speed = parse_float(argument);
                 }
                 Serialport.print("Open loop Speed: ");
                 Serialport.println(controller.Open_loop_speed, 5);
@@ -915,8 +939,10 @@ void UART_protocol(Stream &Serialport)
                 Serialport.println("");
                 Serialport.println("Calibration:");
                 Serialport.println("  Cal          Run full calibration");
+                Serialport.println("  Calonly      The calibration alone, without the runs after it (parameter 56)");
                 Serialport.println("  R/L <ohm/H>  Set phase resistance/inductance before Cal");
                 Serialport.println("  PP <n>       Set pole pairs before Cal");
+                Serialport.println("  Par [n[,v]]  CAN parameter n: read it, or set it to v (no n: all)");
                 Serialport.println("  Save         Save current config to EEPROM");
                 Serialport.println("  Default      Reset config to factory defaults");
                 Serialport.println("");
@@ -934,6 +960,9 @@ void UART_protocol(Stream &Serialport)
                 Serialport.println("  Error        Decoded error flags");
                 Serialport.println("  Clear        Clear all errors, go idle");
                 Serialport.println("  CANID <id>   Get/set CAN node ID");
+                Serialport.println("  Tool <id>    Get/set tool id (0 none, 1 SSG-48, 11-33 MSG)");
+                Serialport.println("  WdFb t,i,v,a Get/set watchdog fallback (ms, mA, ticks/s, after)");
+                Serialport.println("  Product      Board stamp; Product claim / Product clear");
                 Serialport.println("");
                 Serialport.println("See communication.cpp for the complete command list.");
             }
@@ -957,6 +986,49 @@ void UART_protocol(Stream &Serialport)
                 Serialport.println(CAN_rx_overruns);
                 Serialport.print("CAN TX dropped: ");
                 Serialport.println(CAN_tx_dropped);
+                if (controller.wrong_product)
+                {
+                    Serialport.println("WRONG FIRMWARE: this board was calibrated by the other product. This firmware drives");
+                    Serialport.println("nothing; flash the right firmware (or #Product claim if the board really is this product).");
+                }
+                Serialport.println("Product: Spectral Micro");
+                Serialport.print("Current sense zero: ");
+                Serialport.print(controller.sense1_offset);
+                Serialport.print(" / ");
+                Serialport.print(controller.sense2_offset);
+                Serialport.println(controller.sense_zero_switching == SENSE_ZERO_SW_IN_USE ? " counts from 2048, measured with the bridge switching" :
+                                   (controller.sense_zero_ok ? " counts from 2048, measured with the bridge off" : " (not measured or out of range: 2048 used)"));
+                Serialport.print("Current sense zero with the bridge off: ");
+                Serialport.print(controller.sense1_offset_off);
+                Serialport.print(" / ");
+                Serialport.print(controller.sense2_offset_off);
+                Serialport.print("; switching zero: ");
+                Serialport.println(controller.sense_zero_switching == SENSE_ZERO_SW_IN_USE ? "in use" :
+                                   controller.sense_zero_switching == SENSE_ZERO_SW_REJECTED ? "rejected (implausible)" :
+                                   controller.sense_zero_switching == SENSE_ZERO_SW_INTERRUPTED ? "interrupted (a command or an error came first)" :
+                                   controller.sense_zero_switching == SENSE_ZERO_SW_RUNNING ? "measuring" :
+                                   controller.sense_zero_switching == SENSE_ZERO_SW_MEASURED ? "measured, not in use" : "not run");
+                Serialport.print("Tool ID: ");
+                Serialport.println(controller.tool_id);
+                Serialport.print("Watchdog: ");
+                Serialport.print(controller.watchdog_time_ms);
+                Serialport.print(" ms, action ");
+                Serialport.print(controller.watchdog_action);
+                Serialport.print(", fallback ");
+                Serialport.print(controller.wd_fallback_time_ms);
+                Serialport.print(" ms / ");
+                Serialport.print(controller.wd_fallback_current);
+                Serialport.print(" mA / ");
+                Serialport.print(controller.wd_fallback_speed);
+                Serialport.print(" ticks/s, then ");
+                Serialport.println(controller.wd_after_action);
+                Serialport.print("Settings block 2: ");
+                Serialport.println(controller.eeprom_block2_ok ? "ok" : "not available (EEPROM has no second bank)");
+                Serialport.print("Anti-cogging: ");
+                Serialport.print(cogging.mode == COGGING_MODE_HARMONICS ? "harmonics" : (cogging.mode == COGGING_MODE_TABLE ? "table" : "off"));
+                Serialport.print(", scale ");
+                Serialport.print(cogging.scale);
+                Serialport.println(controller.cogging_saved ? " %, saved" : (controller.eeprom_block3_ok ? " %, not saved" : " %, block 3 not available"));
                 if (controller.Calibrated == 0)
                 {
                     Serialport.println("Not calibrated");
@@ -999,6 +1071,7 @@ void UART_protocol(Stream &Serialport)
                 Serialport.println(controller.Kt, 5);
                 Serialport.print("KV: ");
                 Serialport.println(controller.KV, 5);
+                Uart_features_print(Serialport); // what is in force (batch 20)
             }
 
             // Set/get Am I a gripper?
@@ -1011,6 +1084,175 @@ void UART_protocol(Stream &Serialport)
                 }
                 Serialport.print("Gripper: ");
                 Serialport.println(controller.I_AM_GRIPPER);
+            }
+
+            // Set/get the tool id: what this drive is built into (0 none, 1 SSG-48, 11-33 MSG with
+            // tens = rail 1/2/3 = 100/150/200 mm and units = stepper 1/2/3 = 21.5/40/60 mm, 200-254 custom).
+            // Saved with #Save.
+            else if (strcmp(command, "Tool") == 0)
+            {
+                if (strlen(argument) != 0)
+                {
+                    int temp_var = atoi(argument);
+                    if (temp_var < 0 || temp_var > 255)
+                        Serialport.println("Invalid tool id (0-255)");
+                    else
+                        controller.tool_id = temp_var;
+                }
+                Serialport.print("Tool ID: ");
+                Serialport.println(controller.tool_id);
+            }
+
+            // The encoder table on the drive (encal.h): #Encal measures it (one shaft turn each way at 2048 ticks/s,
+            // about 20 s; the shaft must be free), #Encal save also saves, #Encal all also identifies the anti-cogging
+            // and saves both, #Encal stop aborts, #Encal on / off switches the correction, #Encal state shows it.
+            // Any CAN parameter by number (batch 20): #Par lists all, #Par n reads one, #Par n,v sets it
+            else if (strcmp(command, "Par") == 0)
+            {
+                if (strlen(argument) == 0)
+                {
+                    for (int n = 1; n < 256; n++)
+                        Uart_param_print(Serialport, (uint8_t)n, false);
+                }
+                else
+                {
+                    const int n = atoi(argument);
+                    const char *comma = strchr(argument, ',');
+                    if (n < 1 || n > 255)
+                        Serialport.println("Par: a number 1-255, then optionally ,value");
+                    else
+                    {
+                        if (comma != nullptr)
+                        {
+                            int32_t v = 0;
+                            if (Param_is_float((uint8_t)n))
+                            {
+                                const float f = parse_float(comma + 1);
+                                memcpy(&v, &f, 4);
+                            }
+                            else
+                                v = atol(comma + 1);
+                            if (!Param_set((uint8_t)n, v))
+                                Serialport.println("refused: out of range, read only, not now, or unknown");
+                        }
+                        Uart_param_print(Serialport, (uint8_t)n, true);
+                    }
+                }
+            }
+            else if (strcmp(command, "Encal") == 0)
+            {
+                if (strcmp(argument, "stop") == 0)
+                    Encal_abort();
+                else if (strcmp(argument, "off") == 0)
+                    encoder.use = 0;
+                else if (strcmp(argument, "on") == 0)
+                    encoder.use = encoder.valid;
+                else if (strcmp(argument, "state") != 0)
+                    Encal_start(strcmp(argument, "save") == 0, strcmp(argument, "all") == 0 ? 2 : 0);
+                const uint8_t st = Encal_state();
+                int32_t pp = 0, once = 0;
+                Encal_param_get(PARAM_ENCAL_PP, &pp);
+                Encal_param_get(PARAM_ENCAL_ONCE, &once);
+                Serialport.print("Encoder table: ");
+                Serialport.println(st == ENCAL_FORWARD ? "turning forward" : st == ENCAL_BACKWARD ? "turning backward" :
+                                   st == ENCAL_DONE ? "done, in use" : st == ENCAL_FAILED_ABORTED ? "aborted" :
+                                   st == ENCAL_FAILED_ERROR ? "failed: error or not calibrated" :
+                                   st == ENCAL_FAILED_STUCK ? "failed: the rotor did not follow" :
+                                   st == ENCAL_REJECTED ? "rejected: implausible" : "idle");
+                Serialport.print(encoder.valid ? (encoder.use ? "in use" : "measured, not in use") : "not measured");
+                Serialport.print("; error ");
+                Serialport.print(pp / 100.0f, 2);
+                Serialport.print(" deg peak to peak, ");
+                Serialport.print(once / 100.0f, 2);
+                Serialport.print(" deg once per turn; last offset move ");
+                Serialport.print(encal_offset_x10 / 10.0f, 1);
+                Serialport.println(" deg electrical");
+            }
+
+            // On-drive anti-cogging identification (cogcal.h): #Cogcal runs it, #Cogcal save also saves, #Cogcal stop
+            // aborts, #Cogcal state shows it. One motor turn each way at the cogcal speed: the shaft must be free to turn.
+            else if (strcmp(command, "Cogcal") == 0)
+            {
+                if (strcmp(argument, "stop") == 0)
+                    Cogcal_abort();
+                else if (strcmp(argument, "state") != 0)
+                    Cogcal_start(strcmp(argument, "save") == 0, strcmp(argument, "trim") == 0);
+                const uint8_t st = Cogcal_state();
+                Serialport.print("Anti-cogging identification: ");
+                Serialport.println(st == COGCAL_FORWARD ? "turning forward" : st == COGCAL_BACKWARD ? "turning backward" :
+                                   st == COGCAL_DONE ? "done, harmonics on" : st == COGCAL_FAILED_ABORTED ? "aborted" :
+                                   st == COGCAL_FAILED_ERROR ? "failed: error or not calibrated" :
+                                   st == COGCAL_FAILED_STUCK ? "failed: the shaft did not turn" : "idle");
+                Serialport.print("Speed ");
+                Serialport.print(cogcal_speed);
+                Serialport.print(" ticks/s, about ");
+                Serialport.print(2 * (16384UL / (cogcal_speed < 100 ? 100 : cogcal_speed) + 1));
+                Serialport.print(" s; identified cogging ");
+                Serialport.print(cogcal_ripple_x10 / 10.0f, 1);
+                Serialport.println(" mA rms");
+                if (st == COGCAL_DONE)
+                    for (int s = 0; s < COGGING_HARMONICS; s++)
+                    {
+                        Serialport.print("  h");
+                        Serialport.print(cogging.harmonic[s]);
+                        Serialport.print(": ");
+                        Serialport.print(cogging.a[s]);
+                        Serialport.print(", ");
+                        Serialport.println(cogging.b[s]);
+                    }
+            }
+
+            // Product lock: #Product shows the board's stamp; #Product claim stamps it as this product (a motor
+            // the rule misjudges, a repaired board); #Product clear removes the stamp. UART only, on purpose.
+            else if (strcmp(command, "Product") == 0)
+            {
+                if (strcmp(argument, "claim") == 0)
+                {
+                    Product_set_stamp(PRODUCT_ID);
+                    Serialport.println("Board stamped as this product. Power-cycle the drive.");
+                }
+                else if (strcmp(argument, "clear") == 0)
+                {
+                    Product_set_stamp(0);
+                    Serialport.println("Stamp cleared. Power-cycle the drive.");
+                }
+                Serialport.print("Firmware: Spectral Micro; board stamp: ");
+                Serialport.println(controller.board_product == 1 ? "STEPFOC" : controller.board_product == 2 ? "Spectral Micro" : "none");
+                if (controller.wrong_product)
+                    Serialport.println("WRONG FIRMWARE for this board: it drives nothing. Flash the right firmware.");
+            }
+
+            // Set/get the watchdog fallback: #WdFb time_ms,current_mA,speed_ticks_s,after_action
+            // (after_action 0 legacy, 2 brake, 3 coast). Used by watchdog actions 1 (hold) and 4 (descend).
+            // Saved with #Save.
+            else if (strcmp(command, "WdFb") == 0)
+            {
+                if (strlen(argument) != 0)
+                {
+                    int w[4] = {0, 0, 0, 0};
+                    const bool four = parse_ints(argument, w, 4) == 4;
+                    int t = w[0], i = w[1], v = w[2], a = w[3];
+                    if (four)
+                    {
+                        controller.wd_fallback_time_ms = t;
+                        controller.wd_fallback_current = i;
+                        controller.wd_fallback_speed = v;
+                        controller.wd_after_action = a;
+                        Settings2_sanitize();
+                    }
+                    else
+                    {
+                        Serialport.println("Use #WdFb time_ms,current_mA,speed_ticks_s,after_action");
+                    }
+                }
+                Serialport.print("Watchdog fallback: ");
+                Serialport.print(controller.wd_fallback_time_ms);
+                Serialport.print(" ms, ");
+                Serialport.print(controller.wd_fallback_current);
+                Serialport.print(" mA, ");
+                Serialport.print(controller.wd_fallback_speed);
+                Serialport.print(" ticks/s, then ");
+                Serialport.println(controller.wd_after_action);
             }
 
             // Calibrate gripper
@@ -1319,7 +1561,7 @@ void UART_protocol(Stream &Serialport)
 
                 if (strlen(argument) != 0)
                 {
-                    controller.Open_loop_speed = atof(argument);
+                    controller.Open_loop_speed = parse_float(argument);
                 }
                 Serialport.print("Open loop speed: ");
                 Serialport.println(controller.Open_loop_speed);
@@ -1499,5 +1741,112 @@ void Cyclic_UART(Stream &Serialport, uint32_t ms)
                 last_time_ = ms;
             }
         }
+    }
+}
+
+/// @brief One CAN parameter over UART (#Par, batch 20): "P<n> = <value>"; unknown numbers only if asked.
+void Uart_param_print(Stream &Serialport, uint8_t n, bool say_unknown)
+{
+    int32_t v = 0;
+    if (!Param_get(n, &v))
+    {
+        if (say_unknown)
+        {
+            Serialport.print("P");
+            Serialport.print(n);
+            Serialport.println(" unknown");
+        }
+        return;
+    }
+    Serialport.print("P");
+    Serialport.print(n);
+    Serialport.print(" = ");
+    if (Param_is_float(n))
+    {
+        float f;
+        memcpy(&f, &v, 4);
+        Serialport.println(f, 6);
+    }
+    else
+        Serialport.println(v);
+}
+
+/// @brief What is in force and what runs, in words, from the CAN parameters (#Info, batch 20).
+void Uart_features_print(Stream &Serialport)
+{
+    int32_t f = 0, v = 0, w = 0;
+    if (!Param_get(PARAM_FEATURES, &f))
+        return;
+    Serialport.println("In force:");
+    Serialport.print("  encoder table: ");
+    if (f & FEAT_ENCODER_IN_USE)
+    {
+        Param_get(PARAM_ENCAL_PP, &v);
+        Serialport.print("on, error ");
+        Serialport.print(v / 100.0f, 2);
+        Serialport.println(" deg p-p");
+    }
+    else
+        Serialport.println((f & FEAT_ENCODER_MEASURED) ? "measured, off" : "not measured");
+    Serialport.print("  anti-cogging: ");
+    if (f & FEAT_COGGING_ON)
+        Serialport.print((f & FEAT_COGGING_TABLE) ? "on (table)" : "on (harmonics)");
+    else
+        Serialport.print((f & FEAT_COGGING_SET) ? "identified, off" : "not identified");
+    Serialport.println((f & FEAT_COGGING_SAVED) ? ", saved" : "");
+    Param_get(PARAM_ZERO_TRIM1, &v);
+    Param_get(PARAM_ZERO_TRIM2, &w);
+    Serialport.print("  current-sense zero trim: ");
+    Serialport.print(v);
+    Serialport.print(" / ");
+    Serialport.print(w);
+    Serialport.println((f & FEAT_ZERO_SWITCHING) ? " counts (switching zero in use)" : " counts");
+    Param_get(PARAM_COMM_DELAY_US, &v);
+    Serialport.print("  delay compensation: ");
+    if (v)
+    {
+        Serialport.print(v);
+        Serialport.println(" us");
+    }
+    else
+        Serialport.println("off");
+    Param_get(PARAM_SPEED_ESTIMATOR, &v);
+    Param_get(PARAM_SPEED_PLL_BANDWIDTH, &w);
+    Serialport.print("  speed estimate: ");
+    if (v == 0)
+        Serialport.println("moving average");
+    else
+    {
+        Serialport.print(v == 1 ? "PLL, " : "direct PLL, ");
+        Serialport.print(w);
+        Serialport.println(" Hz");
+    }
+    Param_get(PARAM_INPUT_FILTER_HZ, &v);
+    Param_get(PARAM_VEL_INT_DEADBAND, &w);
+    Serialport.print("  input filter: ");
+    if (v)
+    {
+        Serialport.print(v);
+        Serialport.print(" Hz");
+    }
+    else
+        Serialport.print("off");
+    Serialport.print("; integral deadband: ");
+    if (w)
+    {
+        Serialport.print(w);
+        Serialport.println(" ticks");
+    }
+    else
+        Serialport.println("off");
+    const uint32_t ac = ((uint32_t)f >> FEAT_AFTER_CAL_SHIFT) & 3u;
+    Serialport.print("  after a calibration (#Cal; #Calonly skips it): ");
+    Serialport.println(ac == AFTER_CAL_BOTH ? "encoder table and anti-cogging, then save" :
+                       ac == AFTER_CAL_COGGING ? "anti-cogging, then save" : "nothing");
+    if (f & (FEAT_RUN_CALIBRATION | FEAT_RUN_ENCODER | FEAT_RUN_COGGING | FEAT_RUN_PENDING))
+    {
+        Serialport.print("  running: ");
+        Serialport.println((f & FEAT_RUN_CALIBRATION) ? "calibration" : (f & FEAT_RUN_ENCODER) ? "encoder table" :
+                           (f & FEAT_RUN_COGGING) ? "anti-cogging identification" : "the runs after the calibration");
     }
 }

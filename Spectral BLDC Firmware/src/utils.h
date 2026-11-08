@@ -56,5 +56,9 @@ int fourBytesToInt(uint8_t *bytes);
 float fourBytesToFloat(uint8_t *bytes);
 byte mapAndConstrain(int value,int upper_limit, int lower_limit);
 bool isAroundValue(int value, int setpoint, int Tolerance);
+float parse_float(const char *s);                  // atof without strtod
+int parse_ints(const char *s, int *out, int n);    // "a,b,c" -> how many read
+const char *next_word(const char *p, char *out, int size); // the next word, sscanf "%s" without scanf
+float wrap_2pi(float x);                           // into [0, 2 pi), fmod without double maths
 
 #endif

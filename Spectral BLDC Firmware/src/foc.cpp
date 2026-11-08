@@ -21,6 +21,8 @@
 /* Includes ------------------------------------------------------------------*/
 
 #include "utils.h"
+#include "common.h"
+#include "cogging.h"
 #include <Arduino.h>
 #include <stdio.h>
 #include "iodefs.h"
@@ -83,9 +85,20 @@ void sinusoidal_commutation(float v_bus, float u, float v, float w, volatile flo
 /// @param c Output Uc
 void abc_fast(float d, float q, volatile float *a, volatile float *b, volatile float *c){
     /// Inverse DQ0 Transform ///
-    *a = FOC.cosine_value * d - FOC.sine_value * q;                // Faster Inverse DQ0 transform
-    *b = (FOC.const1)*d - (FOC.const4)*q;
-    *c = (FOC.const3)*d - (FOC.const2)*q;
+    FOC.Ud = d; // as asked, for the capture (signals 17, 18)
+    FOC.Uq = q;
+    float dr = d; // rotated forward by speed x delay (parameter 64); not at all below COMM_DELAY_MIN_SPEED
+    float qr = q;
+    const float ds = FOC.delay_s;
+    if (ds != 0.0f)
+    {
+      const float dc = FOC.delay_c;
+      dr = d * dc - q * ds;
+      qr = d * ds + q * dc;
+    }
+    *a = FOC.cosine_value * dr - FOC.sine_value * qr;                // Faster Inverse DQ0 transform
+    *b = (FOC.const1)*dr - (FOC.const4)*qr;
+    *c = (FOC.const3)*dr - (FOC.const2)*qr;
     }
 
 
@@ -113,8 +126,17 @@ void abc( float theta, float d, float q, float *a, float *b, float *c){
 /// @brief Calculates all variables that are used both in abc and dq0 tranforms, giving a speed boost
 /// @param theta Electrical angle
 void dq0_abc_variables(float theta){
-    FOC.sine_value = qfp_fsin(theta);
-    FOC.cosine_value = qfp_fcos(theta);
+    if (controller.fast_trig) // the integer quarter-wave table (cogging.cpp), 16384 steps per turn (parameter 65)
+    {
+        const int32_t a = (int32_t)(theta * 2607.5945f);
+        FOC.sine_value = (float)Cogging_sin_q15((uint32_t)a) * 3.0517578e-5f;
+        FOC.cosine_value = (float)Cogging_sin_q15((uint32_t)a + 4096) * 3.0517578e-5f;
+    }
+    else
+    {
+        FOC.sine_value = qfp_fsin(theta);
+        FOC.cosine_value = qfp_fcos(theta);
+    }
 
     FOC.sin_sqrt3div2 = (SQRT3DEV2 * FOC.sine_value); // 0.86602540378f * sine_value
     FOC.cos_sqrt3div2 = (SQRT3DEV2 * FOC.cosine_value); // 0.86602540378f * cosine_value

@@ -18,6 +18,9 @@
 #include "communication.h"
 #include "EEPROM.h"
 #include "communication_CAN.h"
+#include "scope.h"
+#include "cogcal.h"
+#include "encal.h"
 #include "bootloader_config.h"
 #include <IWatchdog.h>
 
@@ -45,16 +48,6 @@ void setup()
   Init_Digital_Inputs();
   Init_Digital_Outputs();
 
-  // Sleep mode input.Logic high to enable device;
-  // logic low to enter low-power sleep mode; internal pulldown
-  digitalWriteFast(SLEEP, HIGH);
-  // Reset input. Active-low reset input initializes internal logic, clears faults,
-  // and disables the outputs, internal pulldown
-  digitalWriteFast(RESET, HIGH);
-
-  digitalWriteFast(EN1, HIGH);
-  digitalWriteFast(EN2, HIGH);
-  digitalWriteFast(EN3, HIGH);
   digitalWriteFast(LED, HIGH);
 
   // Init system
@@ -74,7 +67,25 @@ void setup()
   digitalWrite(EEPROM_WP, LOW);
   Init_EEPROM();
   //Write_config();
+  // Product lock: on the other product's board, read and write nothing more, drive no pin, start no control loop
+  // and no hardware watchdog; stay addressable over CAN and UART so the right firmware can be flashed.
+  if (Product_board_is_other())
+  {
+    controller.wrong_product = 1;
+    controller.Error = 1;
+    controller.Calibrated = 0; // it read no calibration (STEPFOC's RAM default is 1)
+    Load_can_id_only();
+    Setup_CAN_bus();
+    return;
+  }
   read_config();
+  Product_stamp_at_boot();
+  // Gate driver on only now, after the product check (it used to be the first thing in setup()).
+  digitalWriteFast(SLEEP, HIGH);
+  digitalWriteFast(RESET, HIGH);
+  digitalWriteFast(EN1, HIGH);
+  digitalWriteFast(EN2, HIGH);
+  digitalWriteFast(EN3, HIGH);
   delay(100);
 
   // Begin PWM 50000 = 25Khz -> center aligned
@@ -83,6 +94,7 @@ void setup()
   MyTim2 = pwm_high(PWM_CH2, PWM_FREQ * 2);
   MyTim2 = pwm_high(PWM_CH3, PWM_FREQ * 2);
   pwm_align(MyTim2);
+  Sense_zero_calibrate();
 
   // Get initial encoder value!
   Get_first_encoder();
@@ -163,5 +175,8 @@ void loop()
     CAN_protocol(Serial);
     CAN_heartbeat(ms);
     CAN_watchdog(ms);
+    Scope_pump();
   }
+  Encal_run();  // the encoder table on the drive, when started (also after a calibration, parameter 56)
+  Cogcal_run(); // on-drive anti-cogging identification, when started
 }

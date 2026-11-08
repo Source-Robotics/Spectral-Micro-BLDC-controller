@@ -30,6 +30,10 @@
 #include "common.h"
 #include "foc.h"
 #include <IWatchdog.h>
+#include "watchdog_action.h"
+#include "cogging.h"
+#include "scope.h"
+#include "encal.h"
 
 #define TIMING_DEBUG 0
 
@@ -62,13 +66,13 @@ void Collect_data()
 
   if (controller.DIR_ == 1)
   {
-    controller.Sense1_Raw = ADC_CHANNEL_4_READ_SENSE1();
-    controller.Sense2_Raw = ADC_CHANNEL_3_READ_SENSE2();
+    controller.Sense1_Raw = ADC_CHANNEL_4_READ_SENSE1() - controller.sense1_offset;
+    controller.Sense2_Raw = ADC_CHANNEL_3_READ_SENSE2() - controller.sense2_offset;
   }
   else
   {
-    controller.Sense1_Raw = ADC_CHANNEL_3_READ_SENSE2();
-    controller.Sense2_Raw = ADC_CHANNEL_4_READ_SENSE1();
+    controller.Sense1_Raw = ADC_CHANNEL_3_READ_SENSE2() - controller.sense2_offset;
+    controller.Sense2_Raw = ADC_CHANNEL_4_READ_SENSE1() - controller.sense1_offset;
   }
 
   controller.VBUS_RAW = ADC_CHANNEL_6_READ_VBUS();
@@ -77,7 +81,7 @@ void Collect_data()
   result2 = SPI.transfer16(0x8400);
   digitalWriteFast(CSN, HIGH);
   result = result1 | result2;
-  controller.Position_Raw = result >> 2;
+  controller.Position_Raw = Encoder_correct(result >> 2); // the encoder table, when in use
   SPI.endTransaction();
   /***********************************/
 
@@ -140,8 +144,8 @@ void Collect_data()
 
   /* Calculate velocity in ticks/s */
   controller.Velocity = (controller.Position_Ticks - controller.Old_Position_Ticks) * LOOP_FREQ;
-  /* Moving average filter on the velocity */
-  controller.Velocity_Filter = movingAverage(controller.Velocity);
+  /* The speed the loops use: the moving average or the PLL (parameter 50) */
+  controller.Velocity_Filter = Speed_estimate(controller.Velocity, controller.Position_Ticks - controller.Old_Position_Ticks);
   /***********************************/
 
   /*  Save position values for next cycle*/
@@ -192,7 +196,7 @@ void Get_first_encoder()
   result2 = SPI.transfer16(0x8400);
   digitalWriteFast(CSN, HIGH);
   result = result1 | result2;
-  controller.Position_Raw = result >> 2;
+  controller.Position_Raw = Encoder_correct(result >> 2); // the encoder table, when in use
   SPI.endTransaction();
   /***********************************/
 
@@ -216,6 +220,200 @@ void Get_first_encoder()
   controller.Old_Position_Ticks = controller.Position_Ticks;
   controller.Old_Position_Raw = controller.Position_Raw;
   /***********************************/
+}
+
+/// Brake: phases shorted through the driver (driver stays enabled). NOT current-limited -- see the note in the body.
+static void Phases_brake()
+{
+  /// Brake: keep the driver enabled and hold the zero-voltage PWM vector (all
+  /// three phases at the same duty cycle), which shorts the windings together
+  /// through the driver's complementary switches. Back-EMF drives the braking
+  /// current -- it is not actively current-limited here, so only enable this on
+  /// motors where phase resistance keeps that current within MAX_DRIVE_CURRENT
+  /// at the speeds this board is actually spinning at when brake is commanded.
+  if (controller.reset_pin_state == 0 && controller.sleep_pin_state == 0)
+  {
+    digitalWriteFast(SLEEP, HIGH);
+    digitalWriteFast(RESET, HIGH);
+    controller.reset_pin_state = 1;
+    controller.sleep_pin_state = 1;
+  }
+  pwm_set(PWM_CH1, PWM_MAX / 2, 13);
+  pwm_set(PWM_CH2, PWM_MAX / 2, 13);
+  pwm_set(PWM_CH3, PWM_MAX / 2, 13);
+}
+
+/// Coast: driver disabled, outputs Hi-Z.
+static void Phases_coast()
+{
+  /// Coast: disable the driver entirely (Hi-Z outputs, freewheel).
+  /// Sleep mode input.Logic high to enable device;
+  /// logic low to enter low-power sleep mode; internal pulldown
+  digitalWriteFast(SLEEP, LOW);
+  /// Reset input. Active-low reset input initializes internal logic, clears faults,
+  /// and disables the outputs, internal pulldown
+  digitalWriteFast(RESET, LOW);
+  controller.reset_pin_state = 0;
+  controller.sleep_pin_state = 0;
+}
+
+/// True when the CAN watchdog is the ONLY thing wrong. Mirrors the flags IT_callback() folds into
+/// controller.Error -- a new error source added there must be added here too, otherwise it would get
+/// the gentler watchdog response instead of the full one.
+static bool only_watchdog_error()
+{
+  if (controller.temperature_error || controller.encoder_error || controller.Vbus_error ||
+      controller.Velocity_error || controller.Driver_error || controller.Current_error ||
+      controller.ESTOP_error || controller.Calibrated == 0)
+    return false;
+  if (controller.I_AM_GRIPPER == 1 && (Gripper.estop_error || Gripper.temperature_error))
+    return false;
+  return controller.Watchdog_error == 1;
+}
+
+/// Current-sense zero (2026-11). The firmware assumed the amplifiers read exactly 2048 at zero current; real boards
+/// are a few counts off (bench: about 48 mA of Iq on STEPFOC, -20 to +19 mA on Spectral with nothing flowing). The
+/// current loop then holds that error as real current, and because the error turns with the rotor it adds a ripple
+/// once per electrical cycle. At start-up, with the bridge off, average SENSE_ZERO_SAMPLES readings of each channel;
+/// the offset is subtracted wherever the channel is read. Beyond SENSE_ZERO_MAX_DEV counts it is not trusted (a
+/// fault, or current flowing) and 2048 is kept; #Info and the identity flags say which.
+void Sense_zero_calibrate()
+{
+  Phases_coast(); // driver asleep, outputs Hi-Z
+  delay(20);
+  int32_t sum1 = 0;
+  int32_t sum2 = 0;
+  for (int i = 0; i < SENSE_ZERO_SAMPLES; i++)
+  {
+    sum1 += ADC_CHANNEL_4_READ_SENSE1();
+    sum2 += ADC_CHANNEL_3_READ_SENSE2();
+    delayMicroseconds(50);
+  }
+  int off1 = (int)((sum1 + SENSE_ZERO_SAMPLES / 2) / SENSE_ZERO_SAMPLES) - 2048;
+  int off2 = (int)((sum2 + SENSE_ZERO_SAMPLES / 2) / SENSE_ZERO_SAMPLES) - 2048;
+  controller.sense_zero_ok = (abs(off1) <= SENSE_ZERO_MAX_DEV && abs(off2) <= SENSE_ZERO_MAX_DEV);
+  // plus the trims an anti-cogging run found (encal.h; 0 until one ran): the bridge-off zeros are a few counts off
+  controller.sense1_offset = controller.sense_zero_ok ? off1 + encoder.zero_trim[0] : 0;
+  controller.sense2_offset = controller.sense_zero_ok ? off2 + encoder.zero_trim[1] : 0;
+  controller.sense1_offset_off = controller.sense1_offset;
+  controller.sense2_offset_off = controller.sense2_offset;
+  controller.sense_zero_switching = SENSE_ZERO_SW_RUNNING; // the control loop measures it again with the bridge switching
+}
+
+/// Current-sense zero with the bridge switching (2026-11). The start-up zero is measured with the bridge off, but in
+/// motion the readings are taken with the bridge switching, which can shift them by a few counts: a constant error
+/// that the current loop turns into a ripple at the 1st harmonic of the electrical angle. So the first idle loops
+/// after start-up hold the zero-voltage vector at 50 % duty (no current flows into a motor at rest), wait
+/// SENSE_ZERO_SW_SETTLE loops, then average SENSE_ZERO_SW_SAMPLES readings of each channel exactly where the control
+/// loop reads them; a plausible result is kept for parameter 46 to switch in. Returns true while it owns the bridge.
+static uint16_t sw_zero_loops = 0;
+static int32_t sw_zero_sum1 = 0;
+static int32_t sw_zero_sum2 = 0;
+static bool Sense_zero_switching_step()
+{
+  if (controller.sense_zero_switching != SENSE_ZERO_SW_RUNNING)
+    return false;
+  Phases_brake(); // the zero-voltage vector: all three phases at 50 % duty, driver awake
+  if (sw_zero_loops >= SENSE_ZERO_SW_SETTLE)
+  {
+    // The readings as Collect_data() took them, before the zero in use was subtracted. Zero 1 belongs to ADC channel
+    // 4 and zero 2 to channel 3; which of Sense1/Sense2 holds which follows DIR_ (see Collect_data()).
+    if (controller.DIR_ == 1)
+    {
+      sw_zero_sum1 += controller.Sense1_Raw + controller.sense1_offset;
+      sw_zero_sum2 += controller.Sense2_Raw + controller.sense2_offset;
+    }
+    else
+    {
+      sw_zero_sum1 += controller.Sense2_Raw + controller.sense1_offset;
+      sw_zero_sum2 += controller.Sense1_Raw + controller.sense2_offset;
+    }
+  }
+  sw_zero_loops++;
+  if (sw_zero_loops <= SENSE_ZERO_SW_SETTLE + SENSE_ZERO_SW_SAMPLES)
+    return true;
+  const int o1 = (int)((sw_zero_sum1 + SENSE_ZERO_SW_SAMPLES / 2) / SENSE_ZERO_SW_SAMPLES) - 2048;
+  const int o2 = (int)((sw_zero_sum2 + SENSE_ZERO_SW_SAMPLES / 2) / SENSE_ZERO_SW_SAMPLES) - 2048;
+  bool ok = abs(o1) <= SENSE_ZERO_MAX_DEV && abs(o2) <= SENSE_ZERO_MAX_DEV;
+  if (controller.sense_zero_ok)
+    ok = ok && abs(o1 - controller.sense1_offset_off) <= SENSE_ZERO_SW_MAX_SHIFT &&
+         abs(o2 - controller.sense2_offset_off) <= SENSE_ZERO_SW_MAX_SHIFT;
+  if (ok)
+  {
+    // Kept, not used: on the bench (2026-11-07) the switching zero raised the 1st harmonic; parameter 46 switches it in.
+    controller.sense1_offset_sw = o1;
+    controller.sense2_offset_sw = o2;
+    controller.sense_zero_switching = SENSE_ZERO_SW_MEASURED;
+  }
+  else
+  {
+    controller.sense_zero_switching = SENSE_ZERO_SW_REJECTED;
+  }
+  return false;
+}
+
+/// Watchdog fallback (hold / descend, see watchdog_action.h). Started on the first control loop of a
+/// pure watchdog trip, if the drive was in a closed-loop mode; cleared as soon as the error is cleared.
+static bool wd_fallback_active = false;
+static uint32_t wd_fallback_loops = 0; // control loops since the fallback started
+static int wd_hold_position = 0;       // position captured at the trip, held by WD_RESP_HOLD
+
+/// Modes the fallback may take over from: position, velocity, torque, PD, gripper.
+static bool watchdog_fallback_mode_ok(int mode)
+{
+  return mode == 1 || mode == 2 || mode == 3 || mode == 4 || mode == 6;
+}
+
+/// Hold and descend drive the motor from the error branch, so the gate driver must stay awake there.
+static void Driver_wake()
+{
+  if (controller.reset_pin_state == 0 && controller.sleep_pin_state == 0)
+  {
+    digitalWriteFast(SLEEP, HIGH);
+    digitalWriteFast(RESET, HIGH);
+    controller.reset_pin_state = 1;
+    controller.sleep_pin_state = 1;
+  }
+}
+
+/// @brief What a motion frame does to the bridge before it moves: wake the gate driver if nothing is wrong.
+void Motion_wake()
+{
+  if (controller.Error == 0)
+    Driver_wake();
+}
+
+/// Descend: the fallback current, with the speed held to +-wd_fallback_speed. A PI acts only on the
+/// speed beyond the cap. Inside the cap its integral relaxes back to zero (time constant
+/// WD_DESCEND_RELAX_S), so it only ever holds what keeps the speed at the cap: a joint under gravity
+/// descends at the cap and rests once something stops it, a gripper keeps exactly the fallback
+/// current, and a free motor turns at about the cap speed.
+/// Bench 2026-11-07, before the relaxation: the step at the trip spiked a bare rotor to 5000 ticks/s,
+/// the integral wound to about -320 mA to stop it and then kept that value, cancelling a 200 mA
+/// fallback current and parking the motor.
+#define WD_DESCEND_RELAX_S 0.25f
+static const float WD_DESCEND_RELAX = 1.0f - 1.0f / ((float)LOOP_FREQ * WD_DESCEND_RELAX_S);
+static void Watchdog_descend()
+{
+  const float v = controller.Velocity_Filter;
+  const float cap = (float)controller.wd_fallback_speed;
+  float excess = 0;
+  if (v > cap)
+    excess = v - cap;
+  else if (v < -cap)
+    excess = v + cap;
+
+  if (excess == 0.0f)
+    PID.V_errSum = PID.V_errSum * WD_DESCEND_RELAX;
+  else
+    PID.V_errSum = PID.V_errSum - excess * PID.Ki_v;
+  if (PID.V_errSum > PID.Iq_current_limit)
+    PID.V_errSum = PID.Iq_current_limit;
+  else if (PID.V_errSum < -PID.Iq_current_limit)
+    PID.V_errSum = -PID.Iq_current_limit;
+
+  PID.Iq_setpoint = (float)controller.wd_fallback_current - PID.Kp_v * excess + PID.V_errSum;
+  Torque_mode(); // clamps to the current limit
 }
 
 /// @brief Interrupt callback routine for FOC mode
@@ -279,8 +477,12 @@ void IT_callback(void)
     }
   }
   /// Check Vbus
-  if (controller.VBUS_mV < controller.Min_Vbus || controller.VBUS_mV > controller.Max_Vbus)
-  // if (controller.VBUS_mV > controller.Max_Vbus)
+  /// Undervoltage only after the start-up grace: the supply may still be ramping when the board boots, which
+  /// used to latch a Vbus error at every power-up. Overvoltage is always checked.
+  static uint32_t vbus_grace_loops = (uint32_t)VBUS_STARTUP_GRACE_MS * LOOP_FREQ / 1000;
+  if (vbus_grace_loops > 0)
+    vbus_grace_loops--;
+  if ((controller.VBUS_mV < controller.Min_Vbus && vbus_grace_loops == 0) || controller.VBUS_mV > controller.Max_Vbus)
   {
     controller.Vbus_error = 1;
     controller.Error = 1;
@@ -333,43 +535,32 @@ void IT_callback(void)
     controller.Error = 1;
   }
 
+  /// The switching zero only runs in idle with nothing wrong; anything else first leaves the bridge-off zero in use.
+  if (controller.sense_zero_switching == SENSE_ZERO_SW_RUNNING && (controller.Error || controller.Controller_mode != 0))
+    controller.sense_zero_switching = SENSE_ZERO_SW_INTERRUPTED;
+
+  // the position input filter (parameter 74) starts again from the shaft whenever its modes are left
+  if (controller.Error || (controller.Controller_mode != 1 && controller.Controller_mode != 4))
+    Input_filter_reset();
+
   /// If there is no error driver can operate normaly
   /// If error is active we will immediately go to idle
   if (controller.Error == 0)
   {
+    wd_fallback_active = false;
+    Comm_delay_update(); // parameter 64: the output rotation for this loop
     switch (controller.Controller_mode)
     {
     case 0:
+      if (Sense_zero_switching_step())
+        break;
       if (controller.brake_coast == 1)
       {
-        /// Brake: keep the driver enabled and hold the zero-voltage PWM vector (all
-        /// three phases at the same duty cycle), which shorts the windings together
-        /// through the driver's complementary switches. Back-EMF drives the braking
-        /// current -- it is not actively current-limited here, so only enable this on
-        /// motors where phase resistance keeps that current within MAX_DRIVE_CURRENT
-        /// at the speeds this board is actually spinning at when brake is commanded.
-        if (controller.reset_pin_state == 0 && controller.sleep_pin_state == 0)
-        {
-          digitalWriteFast(SLEEP, HIGH);
-          digitalWriteFast(RESET, HIGH);
-          controller.reset_pin_state = 1;
-          controller.sleep_pin_state = 1;
-        }
-        pwm_set(PWM_CH1, PWM_MAX / 2, 13);
-        pwm_set(PWM_CH2, PWM_MAX / 2, 13);
-        pwm_set(PWM_CH3, PWM_MAX / 2, 13);
+        Phases_brake();
       }
       else
       {
-        /// Coast: disable the driver entirely (Hi-Z outputs, freewheel).
-        /// Sleep mode input.Logic high to enable device;
-        /// logic low to enter low-power sleep mode; internal pulldown
-        digitalWriteFast(SLEEP, LOW);
-        /// Reset input. Active-low reset input initializes internal logic, clears faults,
-        /// and disables the outputs, internal pulldown
-        digitalWriteFast(RESET, LOW);
-        controller.reset_pin_state = 0;
-        controller.sleep_pin_state = 0;
+        Phases_coast();
       }
       break;
     case 1:
@@ -396,6 +587,9 @@ void IT_callback(void)
     case 8:
       Voltage_Torque_mode();
       break;
+    case MODE_ENCAL:
+      Encal_step(); // the encoder table: open loop on a commanded angle (encal.h)
+      break;
     default:
       /// Idle
       break;
@@ -403,16 +597,54 @@ void IT_callback(void)
   }
   else /// If there is error driver is disabled and in sleep mode
   {
+    /// A pure watchdog trip honours controller.watchdog_action (see watchdog_action.h). Byte 0 (what
+    /// RTI and the lib default send), unknown bytes and any other fault keep the old behaviour on
+    /// this firmware, which is COAST -- not the persistent brake_coast setting.
+    const bool only_wd = only_watchdog_error();
+    const int action = controller.watchdog_action;
+    if (!wd_fallback_active && only_wd && (action == WD_ACTION_HOLD || action == WD_ACTION_DESCEND) &&
+        watchdog_fallback_mode_ok(controller.Controller_mode))
+    {
+      // First loop of the trip; Controller_mode still holds the mode the host left the drive in.
+      wd_fallback_active = true;
+      wd_fallback_loops = 0;
+      wd_hold_position = controller.Position_Ticks;
+      // Hold keeps the velocity integral of a position or velocity loop (it carries the load);
+      // descend starts from zero so gravity can take the joint down to the cap speed.
+      if (action == WD_ACTION_DESCEND || !(controller.Controller_mode == 1 || controller.Controller_mode == 2))
+        PID.V_errSum = 0;
+    }
     controller.Controller_mode = 0;
-    // Sleep mode input.Logic high to enable device;
-    // logic low to enter low-power sleep mode; internal pulldown
-    digitalWriteFast(SLEEP, LOW);
-    // Reset input. Active-low reset input initializes internal logic, clears faults,
-    // and disables the outputs, internal pulldown
-    digitalWriteFast(RESET, LOW);
-    controller.reset_pin_state = 0;
-    controller.sleep_pin_state = 0;
+
+    const uint32_t limit_loops = (uint32_t)controller.wd_fallback_time_ms * LOOP_FREQ / 1000;
+    if (wd_fallback_active && wd_fallback_loops < limit_loops)
+      wd_fallback_loops++;
+    const bool expired = wd_fallback_loops >= limit_loops;
+
+    switch (watchdog_response(action, only_wd, wd_fallback_active, expired, controller.wd_after_action))
+    {
+    case WD_RESP_HOLD:
+      Driver_wake();
+      PID.Position_setpoint = wd_hold_position;
+      PID.Feedforward_speed = 0;
+      PID.Feedforward_current = 0;
+      Position_mode();
+      break;
+    case WD_RESP_DESCEND:
+      Driver_wake();
+      Watchdog_descend();
+      break;
+    case WD_RESP_BRAKE:
+      Phases_brake();
+      break;
+    default:
+      Phases_coast();
+      break;
+    }
   }
+
+  /* Capture and histogram (scope.cpp), after the loop so a sample lines up with the setpoint it produced */
+  Scope_tick();
 
   int c2 = micros();
   controller.execution_time = c2 - c;
@@ -605,7 +837,7 @@ int Calibrate_Angle_Offset_Align()
   case 7: // verify: average velocity under +Iq, enforce +Iq -> +encoder
     PID.Iq_setpoint = controller.calibration_offset_current;
     Torque_mode();
-    vel_accum += controller.Velocity_Filter;
+    vel_accum += controller.Velocity_Average;
     if (++cnt >= verify_measure)
     {
       float vfwd = vel_accum / verify_measure;
@@ -675,7 +907,7 @@ int Calibrate_Angle_Offset_Align()
   case 10: // sweep: measure forward speed
     PID.Iq_setpoint = trim_current;
     Torque_mode();
-    vel_accum += controller.Velocity_Filter;
+    vel_accum += controller.Velocity_Average;
     if (++cnt >= trim_measure)
     {
       vfwd_t = vel_accum / trim_measure;
@@ -699,7 +931,7 @@ int Calibrate_Angle_Offset_Align()
   {
     PID.Iq_setpoint = -trim_current;
     Torque_mode();
-    vel_accum += controller.Velocity_Filter;
+    vel_accum += controller.Velocity_Average;
     if (++cnt >= trim_measure)
     {
       float vrev_t = vel_accum / trim_measure;
@@ -901,8 +1133,8 @@ Calculate resistance of BLDC phase
     tick_cnt = tick_cnt + 1;
     if (tick_cnt >= 150) // 150
     {
-      controller.Sense1_Raw = ADC_CHANNEL_4_READ_SENSE1();
-      controller.Sense2_Raw = ADC_CHANNEL_3_READ_SENSE2();
+      controller.Sense1_Raw = ADC_CHANNEL_4_READ_SENSE1() - controller.sense1_offset;
+      controller.Sense2_Raw = ADC_CHANNEL_3_READ_SENSE2() - controller.sense2_offset;
       controller.Sense1_mA = Get_current_mA(controller.Sense1_Raw);
       controller.Sense2_mA = Get_current_mA(controller.Sense2_Raw);
       int cur_avg = (abs(controller.Sense1_mA) + abs(controller.Sense1_mA)) / 2;
@@ -995,8 +1227,8 @@ Small delay between resistance mesure and inductance mesure to drain the coil
 
         controller.VBUS_RAW = ADC_CHANNEL_6_READ_VBUS();
         controller.VBUS_mV = Get_voltage_mV(controller.VBUS_RAW);
-        controller.Sense1_Raw = ADC_CHANNEL_4_READ_SENSE1();
-        controller.Sense2_Raw = ADC_CHANNEL_3_READ_SENSE2();
+        controller.Sense1_Raw = ADC_CHANNEL_4_READ_SENSE1() - controller.sense1_offset;
+        controller.Sense2_Raw = ADC_CHANNEL_3_READ_SENSE2() - controller.sense2_offset;
         controller.Sense1_mA = Get_current_mA(controller.Sense1_Raw);
         controller.Sense2_mA = Get_current_mA(controller.Sense2_Raw);
         int cur_avg = (abs(controller.Sense1_mA) + abs(controller.Sense1_mA)) / 2;
@@ -1039,13 +1271,7 @@ Small delay between resistance mesure and inductance mesure to drain the coil
         // and phase inductance with -3dB bandwidth at desired frequency
         controller.Inductance_cal_status = 2;
         calib_step_inductance = 1;
-        PID.Ki = (float)1 - (float)exp(-controller.Resistance * LOOP_TIME / controller.Inductance);
-        controller.Crossover_frequency = ((float)controller.current_control_bandwidth) / (float)(LOOP_FREQ / PI2);
-        PID.Kp_iq = controller.Resistance * (float)(controller.Crossover_frequency / (float)(PID.Ki));
-        PID.Ki_iq = (float)PID.Ki * (float)PID.Kp_iq;
-        PID.Kp_id = PID.Kp_iq;
-        PID.Ki_id = PID.Ki_iq;
-        if (PID.Kp_iq < 0 || PID.Ki_iq < 0)
+        if (!Current_gains_from_RL()) // Kp = w L, Ki = w R at current_control_bandwidth
         {
           controller.Inductance_cal_status = 0;
           controller.Calib_error = 0;
@@ -1071,7 +1297,7 @@ Open loop spin; Get pole pair and dir
       // Simulate speed for open loop operation
       velocity_step = (int)((float)open_loop_step / ((float)(controller.Open_loop_speed) / (float)CPR));
       theta_SIM = 0;
-      theta_SIM = fmod(theta_SIM, PI2);
+      theta_SIM = wrap_2pi(theta_SIM);
       if (theta_SIM < 0)
       {
         theta_SIM += PI2;
@@ -1119,7 +1345,7 @@ Open loop spin; Get pole pair and dir
         move_stop = 1;
       }
 
-      theta_SIM_command = fmod(theta_SIM, PI2);
+      theta_SIM_command = wrap_2pi(theta_SIM);
       if (theta_SIM_command < 0)
       {
         theta_SIM_command += PI2;
@@ -1340,7 +1566,7 @@ Confirm commutation, then find the angle offset (reversed-wiring-agnostic)
       dq0_abc_variables(controller.Electric_Angle);
       dq0_fast_int(controller.Sense1_mA, controller.Sense2_mA, controller.Sense3_mA, &FOC.Id, &FOC.Iq);
       KV_ticks = KV_ticks + 1;
-      float rpm_speed = (controller.Velocity_Filter * 60) / 16384;
+      float rpm_speed = (controller.Velocity_Average * 60) / 16384;
       KV_speed_accumulator = KV_speed_accumulator + rpm_speed;
       KV_current_accumulator = KV_current_accumulator + FOC.Iq;
     }
@@ -1459,7 +1685,7 @@ void Open_loop_speed(float speed_el, int voltage)
 
   static float theta_SIM = 0;
   theta_SIM += speed_el * LOOP_TIME;
-  theta_SIM = fmod(theta_SIM, PI2);
+  theta_SIM = wrap_2pi(theta_SIM);
   if (theta_SIM < 0)
   {
     theta_SIM += PI2;
@@ -1742,8 +1968,18 @@ void Calib_report(Stream &Serialport)
 
       Serialport.print("Calibration success!");
       Serialport.println(" ");
-      Serialport.print("Save config with #Save");
-      Serialport.println(" ");
+      const uint8_t next = Encal_after_calibration_planned(); // parameter 56, or nothing after #Calonly
+      if (next == AFTER_CAL_BOTH) // batch 20
+        Serialport.println("Next, by itself: the encoder table, then anti-cogging (about a minute; keep the shaft "
+                           "free). Everything is saved when they finish (#Encal state, #Cogcal state)");
+      else if (next == AFTER_CAL_COGGING)
+        Serialport.println("Next, by itself: anti-cogging (about 50 s; keep the shaft free). Everything is saved "
+                           "when it finishes (#Cogcal state)");
+      else
+      {
+        Serialport.print("Save config with #Save");
+        Serialport.println(" ");
+      }
       Serialport.print("Going to idle!");
       Serialport.println(" ");
       Serialport.print("----------------");
@@ -1755,6 +1991,7 @@ void Calib_report(Stream &Serialport)
       Ticker_init(TIM3, LOOP_FREQ, IT_callback);
       controller.Error = 0;
       controller.Calibrated = 1;
+      Encal_after_calibration(); // parameter 56: the anti-cogging and/or the encoder table follow
 
       controller.Calibration = 0;
       controller.Calib_error = 0;
@@ -1800,8 +2037,10 @@ void Position_mode()
 {
   /* Positon PIDS*/
   float position_error = PID.Position_setpoint - controller.Position_Ticks;
+  float speed_ff = PID.Feedforward_speed;
+  Input_filter(PID.Position_setpoint, PID.Feedforward_speed, &position_error, &speed_ff); // parameter 74 (batch 18)
   PID.P_errSum = PID.Kp_p * position_error;
-  PID.Velocity_setpoint = PID.P_errSum + PID.Feedforward_speed;
+  PID.Velocity_setpoint = PID.P_errSum + speed_ff;
 
   /*Clamp velocity to velocity limit*/
   if (PID.Velocity_setpoint > PID.Velocity_limit)
@@ -1811,22 +2050,10 @@ void Position_mode()
 
   /* Velocity PIDS*/
   float velocity_error = PID.Velocity_setpoint - controller.Velocity_Filter;
-  PID.V_errSum = PID.V_errSum + velocity_error * PID.Ki_v;
-
-  /* Clamp integral term*/
-  if (PID.V_errSum > PID.Iq_current_limit)
-    PID.V_errSum = PID.Iq_current_limit;
-  else if (PID.V_errSum < -PID.Iq_current_limit)
-    PID.V_errSum = -PID.Iq_current_limit;
-
-  /* Calculate Iq setpoint*/
-  PID.Iq_setpoint = PID.Kp_v * velocity_error + PID.V_errSum + PID.Feedforward_current; // + cogging_comp
-
-  /* Clamp Iq to current limit*/
-  if (PID.Iq_setpoint > PID.Iq_current_limit)
-    PID.Iq_setpoint = PID.Iq_current_limit;
-  else if (PID.Iq_setpoint < -PID.Iq_current_limit)
-    PID.Iq_setpoint = -PID.Iq_current_limit;
+  // the integral's own speed error: with the deadband (parameter 75) the position error less the band (batch 18)
+  const float integral_error = (controller.vel_int_deadband == 0) ? velocity_error
+                               : Vel_int_setpoint(position_error, speed_ff) - controller.Velocity_Filter;
+  PID.Iq_setpoint = Velocity_pi(velocity_error, integral_error); // clamped
 
   // PID.Iq_setpoint = -100;
 
@@ -1885,22 +2112,7 @@ void Velocity_mode()
 
   /* Velocity PIDS*/
   float velocity_error = PID.Velocity_setpoint - controller.Velocity_Filter;
-  PID.V_errSum = PID.V_errSum + velocity_error * PID.Ki_v;
-
-  /* Clamp integral term*/
-  if (PID.V_errSum > PID.Iq_current_limit)
-    PID.V_errSum = PID.Iq_current_limit;
-  else if (PID.V_errSum < -PID.Iq_current_limit)
-    PID.V_errSum = -PID.Iq_current_limit;
-
-  /* Calculate Iq setpoint*/
-  PID.Iq_setpoint = PID.Kp_v * velocity_error + PID.V_errSum + PID.Feedforward_current; // + cogging_comp
-
-  /* Clamp Iq to current limit*/
-  if (PID.Iq_setpoint > PID.Iq_current_limit)
-    PID.Iq_setpoint = PID.Iq_current_limit;
-  else if (PID.Iq_setpoint < -PID.Iq_current_limit)
-    PID.Iq_setpoint = -PID.Iq_current_limit;
+  PID.Iq_setpoint = Velocity_pi(velocity_error, velocity_error); // clamped
 
   // PID.Iq_setpoint = -100;
 
@@ -2030,7 +2242,10 @@ void Voltage_Torque_mode()
 void PD_mode()
 {
   // PID.Iq_setpoint = PID.KP *() + PID.KD*() + current_feedforward + cogging_comp
-  PID.Iq_setpoint = PID.KP * (PID.Position_setpoint - controller.Position_Ticks) + PID.KD * (PID.Velocity_setpoint - controller.Velocity_Filter) + PID.Feedforward_current;
+  float position_error = PID.Position_setpoint - controller.Position_Ticks;
+  float speed_setpoint = PID.Velocity_setpoint;
+  Input_filter(PID.Position_setpoint, PID.Velocity_setpoint, &position_error, &speed_setpoint); // parameter 74 (batch 18)
+  PID.Iq_setpoint = PID.KP * position_error + PID.KD * (speed_setpoint - controller.Velocity_Filter) + PID.Feedforward_current;
   // PID.Iq_setpoint = PID.KP * (0 - controller.Position_Ticks) + PID.KD * (0 - controller.Velocity_Filter);
 
   /* Clamp Iq to current limit*/
@@ -2253,13 +2468,13 @@ void Collect_data2()
   digitalWriteFast(CSN, HIGH);
   if (controller.DIR_ == 1)
   {
-    controller.Sense1_Raw = ADC_CHANNEL_4_READ_SENSE1();
-    controller.Sense2_Raw = ADC_CHANNEL_3_READ_SENSE2();
+    controller.Sense1_Raw = ADC_CHANNEL_4_READ_SENSE1() - controller.sense1_offset;
+    controller.Sense2_Raw = ADC_CHANNEL_3_READ_SENSE2() - controller.sense2_offset;
   }
   else
   {
-    controller.Sense1_Raw = ADC_CHANNEL_3_READ_SENSE2();
-    controller.Sense2_Raw = ADC_CHANNEL_4_READ_SENSE1();
+    controller.Sense1_Raw = ADC_CHANNEL_3_READ_SENSE2() - controller.sense2_offset;
+    controller.Sense2_Raw = ADC_CHANNEL_4_READ_SENSE1() - controller.sense1_offset;
   }
 
   controller.VBUS_RAW = ADC_CHANNEL_6_READ_VBUS();
@@ -2268,7 +2483,7 @@ void Collect_data2()
   result2 = SPI.transfer16(0x8400);
   digitalWriteFast(CSN, HIGH);
   result = result1 | result2;
-  controller.Position_Raw = result >> 2;
+  controller.Position_Raw = Encoder_correct(result >> 2); // the encoder table, when in use
   SPI.endTransaction();
   /***********************************/
 
@@ -2329,8 +2544,8 @@ void Collect_data2()
 
   /* Calculate velocity in ticks/s */
   controller.Velocity = (controller.Position_Ticks - controller.Old_Position_Ticks) * LOOP_FREQ;
-  /* Moving average filter on the velocity */
-  controller.Velocity_Filter = movingAverage(controller.Velocity);
+  /* The speed the loops use: the moving average or the PLL (parameter 50) */
+  controller.Velocity_Filter = Speed_estimate(controller.Velocity, controller.Position_Ticks - controller.Old_Position_Ticks);
   /***********************************/
 
   /*  Save position values for next cycle*/
@@ -2398,7 +2613,7 @@ void Gripper_mode()
       Velocity_mode();
 
       float current_abs = fabs(FOC.Iq);
-      float velocity_abs = fabs(controller.Velocity_Filter);
+      float velocity_abs = fabs(controller.Velocity_Average);
 
       if (velocity_abs > VELOCITY_CONTACT_THRESHOLD)
       {
@@ -2430,7 +2645,7 @@ void Gripper_mode()
     controller.sleep_pin_state = 0;
 
     float current_abs = fabs(FOC.Iq);
-    float velocity_abs = fabs(controller.Velocity_Filter);
+    float velocity_abs = fabs(controller.Velocity_Average);
 
     if (velocity_abs < VELOCITY_CONTACT_THRESHOLD && current_abs > CURRENT_CONTACT_RATIO * PID.Iq_current_limit)
     {
@@ -2479,7 +2694,7 @@ void Calibrate_gripper()
 
     /// If it is not moving and current is around the setpoint
 
-    if (isAroundValue(abs(controller.Velocity_Filter), 0, 700) &&
+    if (isAroundValue(abs(controller.Velocity_Average), 0, 700) &&
         isAroundValue(abs(FOC.Iq), PID.Iq_current_limit, 90))
     {
       close_confirm_cnt++;
@@ -2509,7 +2724,7 @@ void Calibrate_gripper()
     Velocity_mode();
     /// If it is not moving and current is around the setpoint
 
-    if (isAroundValue(abs(controller.Velocity_Filter), 0, 700) &&
+    if (isAroundValue(abs(controller.Velocity_Average), 0, 700) &&
         isAroundValue(abs(FOC.Iq), PID.Iq_current_limit, 90))
     {
       open_confirm_cnt++;
@@ -2591,4 +2806,262 @@ void Calibrate_gripper()
     open_confirm_cnt = 0;
     close_confirm_cnt = 0;
   }
+}
+
+/// @brief Current-loop PI gains from the measured phase resistance and inductance at
+/// controller.current_control_bandwidth (Hz), the standard way: the PI's zero
+/// cancels the coil's R/L pole, so the closed loop is first order at that bandwidth (Kp = w L, Ki = w R; here in the
+/// discrete form, Ki per loop = 1 - exp(-R T / L)). Until 2026-11 the STEPFOC divided both by 7 ("found
+/// empirically"), a 71 Hz loop. Returns false and leaves the gains alone if R or L is not measured.
+bool Current_gains_from_RL()
+{
+  const float R = controller.Resistance;
+  const float L = controller.Inductance;
+  if (!(R > 0.0f) || !(L > 0.0f))
+    return false;
+  const float ki = 1.0f - qfp_fexp(-R * (float)LOOP_TIME / L);
+  const float crossover = (float)controller.current_control_bandwidth / (float)(LOOP_FREQ / PI2);
+  const float kp = R * crossover / ki;
+  if (!(kp > 0.0f) || !(ki > 0.0f))
+    return false;
+  PID.Ki = ki;
+  controller.Crossover_frequency = crossover;
+  PID.Kp_iq = kp;
+  PID.Ki_iq = ki * kp;
+  PID.Kp_id = kp;
+  PID.Ki_id = ki * kp;
+  return true;
+}
+
+/// @brief The bandwidth, Hz, that the current gains in force give with the measured R and L (the inverse of
+/// Current_gains_from_RL), or 0 if R, L or Kp_iq is not set.
+float Current_bandwidth_in_force()
+{
+  const float R = controller.Resistance;
+  const float L = controller.Inductance;
+  if (!(R > 0.0f) || !(L > 0.0f) || !(PID.Kp_iq > 0.0f))
+    return 0.0f;
+  const float ki = 1.0f - qfp_fexp(-R * (float)LOOP_TIME / L);
+  return PID.Kp_iq * ki / R * (float)(LOOP_FREQ / PI2);
+}
+
+/// Speed estimate (firmware 2026-11 batch 8). Parameter 50 picks the one the loops use:
+///   0  the vendor's 20-sample moving average of the count difference (3.2 ms at 6250 Hz: about 1.5 ms late, in
+///      steps of LOOP_FREQ / 20 ticks/s)
+///   1  a PLL: kp = 2 w, ki = w^2, critically damped; the speed is the integrator,
+///      a smooth second-order low-pass (about 2 / w late); snaps to zero at standstill
+///   2  the direct PLL: the same loop, but the speed is integrator + kp x error: almost no lag, more
+///      of the count's quantisation noise
+/// w = 2 pi x parameter 51 (Hz). The moving average runs every loop; a PLL starts from it when picked (bumpless).
+/// The PLLs are written on the error between the encoder and the estimate, so the floats stay small anywhere.
+// In integers (batch 13): positions in 1/65536 count, speeds in 1/16 tick/s. The float version cost 8.6 us per loop
+// (over 1 us per soft-float operation on this chip); this one gives the same estimate (checked offline).
+static int32_t pll_err = 0;   // encoder count minus the estimate's position, 1/65536 count
+static int32_t pll_int = 0;   // the integrator, 1/16 tick/s
+static int32_t pll_out = 0;   // the speed the PLL gives, 1/16 tick/s
+static int32_t pll_kp_x = 0;  // kp x 256: (kp_x x delta) >> 20 is kp x delta in 1/16 tick/s
+static int32_t pll_ki_x = 0;  // ki T x 256, the same scaling
+static int32_t pll_k1_x = 0;  // (1 - kp T) x 65536
+static int32_t pll_snap = 0;  // the snap-to-zero band (0.5 ki T), 1/16 tick/s
+static uint8_t pll_kind = SPEED_ESTIMATOR_AVERAGE;
+#define PLL_KT_X ((int32_t)((4096LL * 65536LL + LOOP_FREQ / 2) / LOOP_FREQ)) // a speed x T in 1/65536 count, x 65536
+
+/// @brief The PLLs' gains from controller.speed_pll_bandwidth (Hz, the natural frequency).
+void Speed_pll_gains()
+{
+  const float w = PI2 * (float)controller.speed_pll_bandwidth;
+  const float kp = 2.0f * w;
+  const float kiT = w * w * (float)LOOP_TIME;
+  pll_kp_x = (int32_t)(kp * 256.0f + 0.5f);
+  pll_k1_x = (int32_t)((1.0f - kp * (float)LOOP_TIME) * 65536.0f + 0.5f);
+  pll_snap = (int32_t)(kiT * 8.0f + 0.5f);
+  pll_ki_x = (int32_t)(kiT * 256.0f + 0.5f); // last: non-zero marks the gains as set
+}
+
+/// @brief One loop of the speed estimate parameter 50 picks, ticks/s.
+/// @param velocity_raw the count difference times LOOP_FREQ (controller.Velocity)
+/// @param d_ticks the count difference since the last loop
+int Speed_estimate(int velocity_raw, int d_ticks)
+{
+  const int average = movingAverage(velocity_raw);
+  controller.Velocity_Average = average;
+  const uint8_t kind = controller.speed_estimator;
+  if (kind != SPEED_ESTIMATOR_PLL && kind != SPEED_ESTIMATOR_PLL_DIRECT)
+  {
+    pll_kind = SPEED_ESTIMATOR_AVERAGE;
+    return average;
+  }
+  if (pll_ki_x == 0)
+    Speed_pll_gains();
+  if (kind != pll_kind) // just picked: start from the average
+  {
+    pll_err = 0;
+    pll_int = average * 16;
+    pll_out = pll_int;
+    pll_kind = kind;
+  }
+  if (d_ticks > SPEED_PLL_JUMP || d_ticks < -SPEED_PLL_JUMP)
+  {
+    pll_err = 0; // a position reset, not motion
+  }
+  else
+  {
+    const int32_t delta = pll_err + (int32_t)d_ticks * 65536 - (int32_t)(((int64_t)pll_out * PLL_KT_X) >> 16);
+    pll_int += (int32_t)(((int64_t)pll_ki_x * delta + (1 << 19)) >> 20);
+    if (kind == SPEED_ESTIMATOR_PLL)
+    {
+      pll_err = (int32_t)(((int64_t)delta * pll_k1_x) >> 16);
+      if (pll_int < pll_snap && pll_int > -pll_snap)
+        pll_int = 0; // snap to zero, so the count's dither at standstill does not jitter the speed
+      pll_out = pll_int;
+    }
+    else
+    {
+      pll_err = delta;
+      pll_out = pll_int + (int32_t)(((int64_t)pll_kp_x * delta + (1 << 19)) >> 20);
+    }
+  }
+  return (pll_out + 8) >> 4;
+}
+
+/// @brief Id, Iq and the inverse transform's sin/cos at this electrical angle instead of the encoder's (encal.cpp:
+/// the open loop that measures the encoder table).
+void Foc_frame(float theta)
+{
+  dq0_abc_variables(theta);
+  dq0_fast_int(controller.Sense1_mA, controller.Sense2_mA, controller.Sense3_mA, &FOC.Id, &FOC.Iq);
+}
+
+/// @brief The current-sense zero errors behind a 1st harmonic in the anti-cogging set (cogcal.cpp's trim). Not yet
+/// on the Spectral: its three phases and the channel swaps of the phase order need their own map, to be measured on
+/// its bench as sense_check.py did on the STEPFOC. Returns false: the trim is skipped.
+bool Sense_trim_from_h1(float a, float b, int32_t *d1, int32_t *d2)
+{
+  (void)a;
+  (void)b;
+  *d1 = 0;
+  *d2 = 0;
+  return false;
+}
+
+/// @brief Commutation delay compensation (batch 12, parameter 64): the voltage this loop sets reaches the motor about
+/// comm_delay_us later (the rest of the interrupt, the wait for the PWM update, half a control period), when the rotor
+/// has turned on by speed x delay. The output transform rotates (d, q) forward by that angle. Small
+/// angles: cos and sin by their series (clamped at 0.8 rad). Only in the closed-loop modes.
+void Comm_delay_update()
+{
+  // the rotation per tick/s of speed, recomputed only when parameter 64 or the pole pairs change (batch 17)
+  static uint16_t k_us = 0xFFFFu;
+  static int k_pp = -1;
+  static float k = 0.0f;
+  if (controller.comm_delay_us != k_us || controller.pole_pairs != k_pp)
+  {
+    k_us = controller.comm_delay_us;
+    k_pp = controller.pole_pairs;
+    k = PI2 * (float)k_pp / (float)CPR * ((float)k_us * 1e-6f);
+  }
+  const int mode = controller.Controller_mode;
+  const int v = controller.Velocity_Filter;
+  if (k_us == 0 || mode < 1 || mode > 4 || (v < COMM_DELAY_MIN_SPEED && v > -COMM_DELAY_MIN_SPEED))
+  {
+    FOC.delay_c = 1.0f;
+    FOC.delay_s = 0.0f; // no rotation: the output transform skips it
+    return;
+  }
+  float dlt = (float)v * k;
+  if (dlt > 0.8f)
+    dlt = 0.8f;
+  else if (dlt < -0.8f)
+    dlt = -0.8f;
+  const float d2 = dlt * dlt;
+  FOC.delay_c = 1.0f - 0.5f * d2;
+  FOC.delay_s = dlt * (1.0f - d2 * (1.0f / 6.0f));
+}
+
+/// ---- Velocity-loop details (batch 18), each off by default: parameters 74, 75 (RAM) ----
+
+/// @brief The velocity loop's PI: the Iq setpoint, clamped to the current limit (position and velocity modes); the
+/// integral sums and is clamped at the current limit. err_p is the speed error of the proportional part, err_i the one
+/// the integral sums (they differ only with the deadband of parameter 75). Batch 18's anti-windup decay (parameter 73)
+/// was removed in batch 19: on the bench it made a saturated speed step worse and changed nothing in moves or stalls.
+float Velocity_pi(float err_p, float err_i)
+{
+  const float limit = PID.Iq_current_limit;
+  const float ff = PID.Feedforward_current + Cogging_ff_mA();
+  PID.V_errSum = PID.V_errSum + err_i * PID.Ki_v;
+  if (PID.V_errSum > limit)
+    PID.V_errSum = limit;
+  else if (PID.V_errSum < -limit)
+    PID.V_errSum = -limit;
+  float iq = PID.Kp_v * err_p + PID.V_errSum + ff;
+  if (iq > limit)
+    iq = limit;
+  else if (iq < -limit)
+    iq = -limit;
+  return iq;
+}
+
+/// @brief The speed setpoint the velocity integral sees in position mode with the deadband of parameter 75:
+/// the position error less the band, zero inside it; clamped like the setpoint.
+float Vel_int_setpoint(float position_error, float speed_ff)
+{
+  const float band = (float)controller.vel_int_deadband;
+  float e = 0.0f;
+  if (position_error > band)
+    e = position_error - band;
+  else if (position_error < -band)
+    e = position_error + band;
+  float v = PID.Kp_p * e + speed_ff;
+  if (v > PID.Velocity_limit)
+    v = PID.Velocity_limit;
+  else if (v < -PID.Velocity_limit)
+    v = -PID.Velocity_limit;
+  return v;
+}
+
+static int64_t if_pos_q = 0;     // the filtered position, 1/65536 tick (float would lose the small steps far out)
+static float if_vel = 0.0f;      // the filtered speed, ticks/s
+static float if_kp = 0.0f;       // w^2
+static float if_ki = 0.0f;       // 2 w: critically damped
+static uint16_t if_hz = 0;       // the setting the gains were computed for
+static volatile uint8_t if_ready = 0;
+
+/// @brief The position input filter starts again from the shaft (the control interrupt calls this whenever the
+/// position and PD modes are not running).
+void Input_filter_reset()
+{
+  if_ready = 0;
+}
+
+/// @brief The position input filter, parameter 74 (Hz): a critically
+/// damped second-order filter from the host's position and speed setpoints to the loops, so the staircase a 50-250 Hz
+/// host sends becomes a smooth path. Position mode (speed = the feedforward) and PD mode (speed = the setpoint) only.
+/// When it runs, it replaces the position error and the speed the mode uses; otherwise it leaves them as they are.
+void Input_filter(int32_t pos_in, float vel_in, float *position_error, float *speed)
+{
+  const int mode = controller.Controller_mode;
+  if (controller.input_filter_hz == 0 || (mode != 1 && mode != 4))
+  {
+    if_ready = 0;
+    return;
+  }
+  if (controller.input_filter_hz != if_hz)
+  {
+    if_hz = controller.input_filter_hz;
+    const float w = PI2 * (float)if_hz;
+    if_ki = 2.0f * w;
+    if_kp = w * w;
+  }
+  if (!if_ready)
+  {
+    if_pos_q = (int64_t)controller.Position_Ticks * 65536;
+    if_vel = (float)controller.Velocity_Filter;
+    if_ready = 1;
+  }
+  const float dp = (float)((int64_t)pos_in * 65536 - if_pos_q) * (1.0f / 65536.0f);
+  const float accel = if_kp * dp + if_ki * (vel_in - if_vel);
+  if_vel += accel * (float)LOOP_TIME;
+  if_pos_q += (int64_t)(if_vel * ((float)LOOP_TIME * 65536.0f));
+  *position_error = (float)(if_pos_q - (int64_t)controller.Position_Ticks * 65536) * (1.0f / 65536.0f);
+  *speed = if_vel;
 }

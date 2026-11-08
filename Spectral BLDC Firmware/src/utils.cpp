@@ -349,3 +349,101 @@ byte mapAndConstrain(int value,int upper_limit, int lower_limit) {
   }
 
  
+
+/// @brief A decimal number like atof gives it ("-12.5", "0.0005", "5e-4", " 3"), stopping at the first character that
+/// does not fit. Replaces atof, which pulls strtod and its arbitrary-precision helpers into the image (about 4 KB).
+float parse_float(const char *s)
+{
+  while (*s == ' ' || *s == '\t')
+    s++;
+  bool negative = false;
+  if (*s == '+' || *s == '-')
+    negative = (*s++ == '-');
+  float value = 0.0f;
+  while (*s >= '0' && *s <= '9')
+    value = value * 10.0f + (float)(*s++ - '0');
+  if (*s == '.')
+  {
+    s++;
+    float scale = 0.1f;
+    while (*s >= '0' && *s <= '9')
+    {
+      value += (float)(*s++ - '0') * scale;
+      scale *= 0.1f;
+    }
+  }
+  if (*s == 'e' || *s == 'E')
+  {
+    s++;
+    bool down = false;
+    if (*s == '+' || *s == '-')
+      down = (*s++ == '-');
+    int e = 0;
+    while (*s >= '0' && *s <= '9')
+    {
+      e = e * 10 + (*s++ - '0');
+      if (e > 38)
+        e = 38;
+    }
+    while (e-- > 0)
+      value = down ? value / 10.0f : value * 10.0f;
+  }
+  return negative ? -value : value;
+}
+
+/// @brief Up to n comma-separated integers ("10000,-1200,2000,3"); returns how many it read. Replaces sscanf "%d,%d".
+int parse_ints(const char *s, int *out, int n)
+{
+  int got = 0;
+  while (got < n)
+  {
+    while (*s == ' ' || *s == '\t')
+      s++;
+    bool negative = false;
+    if (*s == '+' || *s == '-')
+      negative = (*s++ == '-');
+    if (*s < '0' || *s > '9')
+      break;
+    long v = 0;
+    while (*s >= '0' && *s <= '9')
+      v = v * 10 + (*s++ - '0');
+    out[got++] = (int)(negative ? -v : v);
+    while (*s == ' ' || *s == '\t')
+      s++;
+    if (*s != ',')
+      break;
+    s++;
+  }
+  return got;
+}
+
+/// @brief The next word after any spaces, into out (at most size - 1 characters; the rest of a longer word is
+/// skipped). Returns the position after the word, or NULL if there is none (out is then empty). Replaces sscanf "%19s".
+const char *next_word(const char *p, char *out, int size)
+{
+  out[0] = 0;
+  while (*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n')
+    p++;
+  if (*p == 0)
+    return NULL;
+  int n = 0;
+  while (*p != 0 && *p != ' ' && *p != '\t' && *p != '\r' && *p != '\n')
+  {
+    if (n < size - 1)
+      out[n++] = *p;
+    p++;
+  }
+  out[n] = 0;
+  return p;
+}
+
+/// @brief x wrapped into [0, 2 pi). Replaces fmod, which pulls in double-precision code.
+float wrap_2pi(float x)
+{
+  const float two_pi = 6.283185307f;
+  while (x >= two_pi)
+    x -= two_pi;
+  while (x < 0.0f)
+    x += two_pi;
+  return x;
+}

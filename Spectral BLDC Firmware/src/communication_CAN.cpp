@@ -21,6 +21,8 @@
 
 #include "communication_CAN.h"
 #include "bootloader_config.h"
+#include "scope.h"
+#include "encal.h" // Encal_feature_bits (parameter 79)
 
 /*
 The node with the lowest ID will always win the arbitration and therefore has the highest priority.
@@ -496,6 +498,65 @@ void CAN_protocol(Stream &Serialport)
                     #if (DEBUG_COMS > 0)
                     Serialport.println("Settings; Wrong DL");
                     #endif
+                }
+                break;
+            }
+
+            case IN_PARAM_SET:{
+                if (CAN_RX_msg.type == DATA_FRAME && CAN_RX_msg.len == 5){
+                    uint8_t temp_buffer[] = {CAN_RX_msg.data[1], CAN_RX_msg.data[2], CAN_RX_msg.data[3], CAN_RX_msg.data[4]};
+                    Param_set(CAN_RX_msg.data[0], fourBytesToInt(temp_buffer));
+                    controller.Wrong_DL = 0;
+                }else{
+                    controller.Wrong_DL = 1;
+                }
+                break;
+            }
+
+            case IN_PARAM_GET:{
+                if (CAN_RX_msg.type == DATA_FRAME && CAN_RX_msg.len == 1){
+                    Param_value_CAN(CAN_RX_msg.data[0]);
+                    controller.Wrong_DL = 0;
+                    controller.watchdog_reset = 1;
+                }else{
+                    controller.Wrong_DL = 1;
+                }
+                break;
+            }
+
+            case OUT_IN_TELEMETRY:{
+                if (CAN_RX_msg.type == REMOTE_FRAME){
+                    Telemetry_CAN();
+                    controller.watchdog_reset = 1;
+                }
+                break;
+            }
+
+            case IN_BUFFER_READ:{
+                if (CAN_RX_msg.type == DATA_FRAME && CAN_RX_msg.len == 5){
+                    Scope_read_request(CAN_RX_msg.data);
+                    controller.Wrong_DL = 0;
+                    controller.watchdog_reset = 1;
+                }else{
+                    controller.Wrong_DL = 1;
+                }
+                break;
+            }
+
+            case IN_BUFFER_WRITE:{
+                if (CAN_RX_msg.type == DATA_FRAME && CAN_RX_msg.len == 8){
+                    Scope_write(CAN_RX_msg.data);
+                    controller.Wrong_DL = 0;
+                }else{
+                    controller.Wrong_DL = 1;
+                }
+                break;
+            }
+
+            case OUT_IN_IDENTITY:{
+                if (CAN_RX_msg.type == REMOTE_FRAME){
+                    Identity_CAN();
+                    controller.watchdog_reset = 1;
                 }
                 break;
             }
@@ -984,6 +1045,394 @@ void Voltage_CAN()
 
 /// @brief Send motor info ( 7 byte)
 /// Direction Driver -> host
+/// A float parameter travels as its IEEE-754 bit pattern, the byte order the gain commands use.
+static bool Param_float(float f, int32_t *value)
+{
+    memcpy(value, &f, 4);
+    return true;
+}
+
+/// @brief Whether a parameter travels as a float's bit pattern (the gains and limits that are floats).
+bool Param_is_float(uint8_t param)
+{
+    switch (param)
+    {
+    case PARAM_KPP:
+    case PARAM_KPV:
+    case PARAM_KIV:
+    case PARAM_KPIQ:
+    case PARAM_KIIQ:
+    case PARAM_KP:
+    case PARAM_KD:
+    case PARAM_VELOCITY_LIMIT:
+    case PARAM_CURRENT_LIMIT:
+    case PARAM_KT:
+        return true;
+    default:
+        return false;
+    }
+}
+
+/// @brief Read a parameter (constants.h PARAM_*). False for an unknown number.
+bool Param_get(uint8_t param, int32_t *value)
+{
+    switch (param)
+    {
+    case PARAM_TOOL_ID:
+        *value = controller.tool_id;
+        return true;
+    case PARAM_WD_FALLBACK_TIME:
+        *value = controller.wd_fallback_time_ms;
+        return true;
+    case PARAM_WD_FALLBACK_CURRENT:
+        *value = controller.wd_fallback_current;
+        return true;
+    case PARAM_WD_FALLBACK_SPEED:
+        *value = controller.wd_fallback_speed;
+        return true;
+    case PARAM_WD_AFTER_ACTION:
+        *value = controller.wd_after_action;
+        return true;
+    case PARAM_WD_TIME:
+        *value = controller.watchdog_time_ms;
+        return true;
+    case PARAM_WD_ACTION:
+        *value = controller.watchdog_action;
+        return true;
+    case PARAM_KPP:
+        return Param_float(PID.Kp_p, value);
+    case PARAM_KPV:
+        return Param_float(PID.Kp_v, value);
+    case PARAM_KIV:
+        return Param_float(PID.Ki_v, value);
+    case PARAM_KPIQ:
+        return Param_float(PID.Kp_iq, value);
+    case PARAM_KIIQ:
+        return Param_float(PID.Ki_iq, value);
+    case PARAM_KP:
+        return Param_float(PID.KP, value);
+    case PARAM_KD:
+        return Param_float(PID.KD, value);
+    case PARAM_VELOCITY_LIMIT:
+        return Param_float(PID.Velocity_limit, value);
+    case PARAM_CURRENT_LIMIT:
+        return Param_float(PID.Iq_current_limit, value);
+    case PARAM_VOLTAGE_LIMIT:
+        *value = PID.Voltage_limit;
+        return true;
+    case PARAM_BRAKE_COAST:
+        *value = controller.brake_coast;
+        return true;
+    case PARAM_HEARTBEAT_MS:
+        *value = controller.Heartbeat_rate_ms;
+        return true;
+    case PARAM_KT:
+        return Param_float(controller.Kt, value);
+    case PARAM_SENSE1_OFFSET:
+        *value = controller.sense1_offset;
+        return true;
+    case PARAM_SENSE2_OFFSET:
+        *value = controller.sense2_offset;
+        return true;
+    case PARAM_BOARD_PRODUCT:
+        *value = controller.board_product;
+        return true;
+    case PARAM_SENSE1_OFFSET_OFF:
+        *value = controller.sense1_offset_off;
+        return true;
+    case PARAM_SENSE2_OFFSET_OFF:
+        *value = controller.sense2_offset_off;
+        return true;
+    case PARAM_SENSE_ZERO_SWITCHING:
+        *value = controller.sense_zero_switching;
+        return true;
+    case PARAM_SENSE_ZERO_USE_SWITCHING:
+        *value = controller.sense_zero_switching == SENSE_ZERO_SW_IN_USE ? 1 : 0;
+        return true;
+    case PARAM_SENSE1_OFFSET_SW:
+        *value = controller.sense1_offset_sw;
+        return true;
+    case PARAM_SENSE2_OFFSET_SW:
+        *value = controller.sense2_offset_sw;
+        return true;
+    case PARAM_CURRENT_BANDWIDTH:
+        *value = (int32_t)(Current_bandwidth_in_force() + 0.5f);
+        return true;
+    case PARAM_ID_SETPOINT:
+        *value = (int32_t)PID.Id_setpoint;
+        return true;
+    case PARAM_COMM_DELAY_US:
+        *value = controller.comm_delay_us;
+        return true;
+    case PARAM_R_MOHM:
+        *value = (int32_t)(controller.Resistance * 1000.0f + 0.5f);
+        return true;
+    case PARAM_L_UH:
+        *value = (int32_t)(controller.Inductance * 1000000.0f + 0.5f);
+        return true;
+    case PARAM_POLE_PAIRS:
+        *value = controller.pole_pairs;
+        return true;
+    case PARAM_FEATURES:
+    {
+        uint32_t bits = Encal_feature_bits();
+        if (controller.Calibrated)
+            bits |= FEAT_CALIBRATED;
+        if (controller.sense_zero_switching == SENSE_ZERO_SW_IN_USE)
+            bits |= FEAT_ZERO_SWITCHING;
+        if (controller.comm_delay_us != 0)
+            bits |= FEAT_DELAY_COMP;
+        if (controller.speed_estimator != SPEED_ESTIMATOR_AVERAGE)
+            bits |= FEAT_SPEED_PLL;
+        if (controller.fast_trig)
+            bits |= FEAT_FAST_TRIG;
+        if (controller.input_filter_hz != 0)
+            bits |= FEAT_INPUT_FILTER;
+        if (controller.vel_int_deadband != 0)
+            bits |= FEAT_DEADBAND;
+        if (controller.Calibration == 1)
+            bits |= FEAT_RUN_CALIBRATION;
+        *value = (int32_t)bits;
+        return true;
+    }
+    case PARAM_INPUT_FILTER_HZ:
+        *value = controller.input_filter_hz;
+        return true;
+    case PARAM_VEL_INT_DEADBAND:
+        *value = controller.vel_int_deadband;
+        return true;
+    case PARAM_FAST_TRIG:
+        *value = controller.fast_trig;
+        return true;
+    case PARAM_SPEED_ESTIMATOR:
+        *value = controller.speed_estimator;
+        return true;
+    case PARAM_SPEED_PLL_BANDWIDTH:
+        *value = controller.speed_pll_bandwidth;
+        return true;
+    default:
+        return Scope_param_get(param, value); // 24+: capture, histogram, anti-cogging
+    }
+}
+
+/// @brief Set a parameter (constants.h PARAM_*), clamped to its range. False for an unknown number.
+bool Param_set(uint8_t param, int32_t value)
+{
+    switch (param)
+    {
+    case PARAM_TOOL_ID:
+        if (value >= 0 && value <= 255)
+            controller.tool_id = value;
+        break;
+    case PARAM_WD_FALLBACK_TIME:
+        controller.wd_fallback_time_ms = value;
+        break;
+    case PARAM_WD_FALLBACK_CURRENT:
+        controller.wd_fallback_current = value;
+        break;
+    case PARAM_WD_FALLBACK_SPEED:
+        controller.wd_fallback_speed = value;
+        break;
+    case PARAM_WD_AFTER_ACTION:
+        controller.wd_after_action = value;
+        break;
+    case PARAM_WD_TIME:
+        controller.watchdog_time_ms = (value < 0) ? 0 : value;
+        break;
+    case PARAM_WD_ACTION:
+        controller.watchdog_action = (value < 0 || value > 255) ? 0 : value;
+        break;
+    case PARAM_SENSE1_OFFSET: // in RAM: the next start measures the zeros again
+        if (value < -400 || value > 400)
+            return false;
+        controller.sense1_offset = value;
+        return true;
+    case PARAM_SENSE2_OFFSET:
+        if (value < -400 || value > 400)
+            return false;
+        controller.sense2_offset = value;
+        return true;
+    case PARAM_INPUT_FILTER_HZ:
+        if (value < 0 || value > INPUT_FILTER_MAX_HZ)
+            return false;
+        controller.input_filter_hz = (uint16_t)value;
+        return true;
+    case PARAM_VEL_INT_DEADBAND:
+        if (value < 0 || value > VEL_INT_DEADBAND_MAX)
+            return false;
+        controller.vel_int_deadband = (uint16_t)value;
+        return true;
+    case PARAM_R_MOHM:
+        if (value < 1 || value > 100000)
+            return false;
+        controller.Resistance = (float)value / 1000.0f;
+        return true;
+    case PARAM_L_UH:
+        if (value < 1 || value > 1000000)
+            return false;
+        controller.Inductance = (float)value / 1000000.0f;
+        return true;
+    case PARAM_POLE_PAIRS:
+        if (value < 1 || value > 200 || controller.Controller_mode != 0)
+            return false;
+        controller.pole_pairs = value;
+        return true;
+    case PARAM_COMM_DELAY_US:
+        if (value < 0 || value > COMM_DELAY_MAX_US)
+            return false;
+        controller.comm_delay_us = (uint16_t)value;
+        return true;
+    case PARAM_FAST_TRIG:
+        controller.fast_trig = value ? 1 : 0;
+        return true;
+    case PARAM_ID_SETPOINT:
+        if (value < -3000 || value > 3000)
+            return false;
+        PID.Id_setpoint = (float)value;
+        return true;
+    case PARAM_SPEED_ESTIMATOR:
+        if (value < SPEED_ESTIMATOR_AVERAGE || value > SPEED_ESTIMATOR_PLL_DIRECT)
+            return false;
+        controller.speed_estimator = value;
+        return true;
+    case PARAM_SPEED_PLL_BANDWIDTH:
+        if (value < SPEED_PLL_BANDWIDTH_MIN || value > SPEED_PLL_BANDWIDTH_MAX)
+            return false;
+        controller.speed_pll_bandwidth = value;
+        Speed_pll_gains();
+        return true;
+    case PARAM_CURRENT_BANDWIDTH:
+    {
+        if (value < CURRENT_BANDWIDTH_MIN || value > CURRENT_BANDWIDTH_MAX)
+            return false;
+        const float before = controller.current_control_bandwidth;
+        controller.current_control_bandwidth = value;
+        if (!Current_gains_from_RL())
+        {
+            controller.current_control_bandwidth = before;
+            return false; // R and L not measured yet: calibrate first
+        }
+        return true;
+    }
+    case PARAM_SENSE_ZERO_USE_SWITCHING:
+        if (value == 1 && controller.sense_zero_switching == SENSE_ZERO_SW_MEASURED)
+        {
+            controller.sense1_offset = controller.sense1_offset_sw;
+            controller.sense2_offset = controller.sense2_offset_sw;
+            controller.sense_zero_switching = SENSE_ZERO_SW_IN_USE;
+        }
+        else if (value == 0 && controller.sense_zero_switching == SENSE_ZERO_SW_IN_USE)
+        {
+            controller.sense1_offset = controller.sense1_offset_off;
+            controller.sense2_offset = controller.sense2_offset_off;
+            controller.sense_zero_switching = SENSE_ZERO_SW_MEASURED;
+        }
+        return true;
+    default:
+        return Scope_param_set(param, value); // 24+: capture, histogram, anti-cogging
+    }
+    Settings2_sanitize(); // clamps the block 2 values
+    return true;
+}
+
+/// @brief Answer IN_PARAM_GET on OUT_PARAM_VALUE: number + value (DLC 5), or just the number (DLC 1) if unknown
+void Param_value_CAN(uint8_t param)
+{
+    int32_t value = 0;
+    CAN_TX_msg.data[0] = param;
+    if (Param_get(param, &value))
+    {
+        byte four[4];
+        intTo4Bytes(value, four);
+        CAN_TX_msg.data[1] = four[0];
+        CAN_TX_msg.data[2] = four[1];
+        CAN_TX_msg.data[3] = four[2];
+        CAN_TX_msg.data[4] = four[3];
+        CAN_TX_msg.len = 5;
+    }
+    else
+    {
+        CAN_TX_msg.len = 1;
+    }
+    CAN_TX_msg.type = DATA_FRAME;
+    CAN_TX_msg.format = STANDARD_FORMAT;
+    CAN_TX_msg.id = Combine_2_CAN_ID(controller.CAN_ID, OUT_PARAM_VALUE, controller.Error);
+    CANSend(&CAN_TX_msg);
+}
+
+/// @brief Answer OUT_IN_TELEMETRY: temperature, Vbus, both error bytes and Iq in one snapshot (constants.h)
+void Telemetry_CAN()
+{
+    byte two[2];
+    const uint32_t irq = __get_PRIMASK();
+    __disable_irq();
+    const int temp_deg = controller.TEMP_DEG;
+    const int vbus_mv = controller.VBUS_mV;
+    const int iq_ma = (int)FOC.Iq;
+    const bool error = controller.Error;
+    bool Error_array[] = {controller.Error, controller.temperature_error, controller.encoder_error,
+                          controller.Vbus_error, controller.Driver_error, controller.Velocity_error,
+                          controller.Current_error, controller.ESTOP_error};
+    bool Error_array2[] = {controller.Calibrated, controller.Activated, controller.Watchdog_error,
+                           controller.wrong_product, 0, 0, 0, 0};
+    __set_PRIMASK(irq);
+    intTo2Bytes(temp_deg, two);
+    CAN_TX_msg.data[0] = two[0];
+    CAN_TX_msg.data[1] = two[1];
+    intTo2Bytes(vbus_mv, two);
+    CAN_TX_msg.data[2] = two[0];
+    CAN_TX_msg.data[3] = two[1];
+    CAN_TX_msg.data[4] = bitsToByte(Error_array);
+    CAN_TX_msg.data[5] = bitsToByte(Error_array2);
+    intTo2Bytes(iq_ma, two);
+    CAN_TX_msg.data[6] = two[0];
+    CAN_TX_msg.data[7] = two[1];
+    CAN_TX_msg.len = 8;
+    CAN_TX_msg.type = DATA_FRAME;
+    CAN_TX_msg.format = STANDARD_FORMAT;
+    CAN_TX_msg.id = Combine_2_CAN_ID(controller.CAN_ID, OUT_IN_TELEMETRY, error);
+    CANSend(&CAN_TX_msg);
+    controller.Send_heartbeat = 0;
+}
+
+/// @brief Answer OUT_IN_IDENTITY: what this drive is (see constants.h for the layout)
+void Identity_CAN()
+{
+    int pole_pairs = controller.pole_pairs;
+    if (pole_pairs < 0 || pole_pairs > 255)
+        pole_pairs = 0;
+    uint8_t flags = 0;
+    if (controller.I_AM_GRIPPER == 1)
+        flags |= 1 << 0;
+    if (controller.brake_coast == 1)
+        flags |= 1 << 1;
+    if (controller.commutation_dir < 0)
+        flags |= 1 << 2;
+    if (controller.eeprom_block2_ok)
+        flags |= 1 << 3;
+    if (controller.wrong_product)
+        flags |= 1 << 4;
+    if (controller.sense_zero_ok)
+        flags |= 1 << 5;
+    if (controller.cogging_saved)
+        flags |= 1 << 6;
+    if (controller.sense_zero_switching == SENSE_ZERO_SW_IN_USE)
+        flags |= 1 << 7;
+    CAN_TX_msg.data[0] = PRODUCT_ID;
+    CAN_TX_msg.data[1] = (uint8_t)controller.tool_id;
+    CAN_TX_msg.data[2] = (FIRMWARE_VERSION >> 8) & 0xFF;
+    CAN_TX_msg.data[3] = FIRMWARE_VERSION & 0xFF;
+    CAN_TX_msg.data[4] = (uint8_t)controller.HARDWARE_VERSION;
+    CAN_TX_msg.data[5] = (uint8_t)pole_pairs;
+    CAN_TX_msg.data[6] = (controller.Calibrated == 1) ? 1 : 0;
+    CAN_TX_msg.data[7] = flags;
+    CAN_TX_msg.len = 8;
+    CAN_TX_msg.type = DATA_FRAME;
+    CAN_TX_msg.format = STANDARD_FORMAT;
+    CAN_TX_msg.id = Combine_2_CAN_ID(controller.CAN_ID, OUT_IN_IDENTITY, controller.Error);
+    CANSend(&CAN_TX_msg);
+}
+
 void Device_info_CAN()
 {
     byte data_buffer_send[4];
@@ -1077,7 +1526,7 @@ void State_of_Errors_CAN()
     bool Error_array[] = {controller.Error, controller.temperature_error, controller.encoder_error,
                           controller.Vbus_error, controller.Driver_error, controller.Velocity_error,
                           controller.Current_error, controller.ESTOP_error};
-    bool Error_array2[] = {controller.Calibrated, controller.Activated, controller.Watchdog_error, 0, 0, 0, 0, 0};
+    bool Error_array2[] = {controller.Calibrated, controller.Activated, controller.Watchdog_error, controller.wrong_product, 0, 0, 0, 0};
 
     CAN_TX_msg.data[0] = bitsToByte(Error_array);
     CAN_TX_msg.data[1] = bitsToByte(Error_array2);
