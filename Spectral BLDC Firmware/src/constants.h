@@ -315,6 +315,15 @@ CAN BUS CONSTANTS
 #define BUFFER_COGGING_HARMONICS 2
 #define BUFFER_COGGING_TABLE 3
 #define BUFFER_ENCODER_TABLE 4      // the encoder table: 128 entries (1/16 count), 3 per frame; read only
+// Sound through the motor (batch 22, sound.h). Data frames, big-endian, no answer:
+// IN_SOUND, DLC 8: op (u8), channel (u8), a (u16), b (u16), c (u16):
+//   op 0 stop everything; 1 a tone now (channel 0-3, a = Hz, b = mA, c = ms, 0 = until stopped);
+//   2 queue an event (channel, a = Hz or 0 for silence, b = mA, then wait c ms; 0 = the next one starts with it);
+//   3 play the queue; 4 play samples (a = sample rate Hz, b = full-scale mV; send samples first); 5 samples off;
+//   6 clear the queue. Sound plays only while the drive holds or moves (modes 1-4); see parameters 80-82.
+// IN_SOUND_SAMPLES, DLC 1-8: that many samples (i8), appended to the 1024-sample buffer.
+#define IN_SOUND 44
+#define IN_SOUND_SAMPLES 45
 // Signals the capture and the histogram record (PARAM_CAPTURE_SOURCE_*, PARAM_HIST_Y), int16 each.
 #define SIGNAL_NONE 0
 #define SIGNAL_IQ 1                 // measured Iq, mA
@@ -469,6 +478,14 @@ CAN BUS CONSTANTS
 #define FEAT_RUN_ENCODER (1u << 21)     // the encoder table is being measured
 #define FEAT_RUN_COGGING (1u << 22)     // the anti-cogging is being identified
 #define FEAT_RUN_PENDING (1u << 23)     // the runs after a calibration are about to start
+#define FEAT_RUN_SOUND (1u << 24)       // sound is playing
+// Sound (batch 22, sound.h)
+#define PARAM_SOUND_STATE 80        // R bits 0-7 queued events, 8-18 buffered samples, 24 tones, 25 queue, 26 samples,
+                                    // 27 the samples ran dry
+#define PARAM_SOUND_LIMIT_MV 81     // the sound's voltage at most, mV (0 refuses sound; default SOUND_LIMIT_DEFAULT_MV)
+#define PARAM_SOUND_AXIS 82         // 0: on the d axis (no torque, the default), 1: on the q axis (a torque ripple)
+#define SOUND_LIMIT_DEFAULT_MV 2000
+#define SOUND_LIMIT_MAX_MV 6000
 #define INPUT_FILTER_MAX_HZ (LOOP_FREQ / 25)
 #define VEL_INT_DEADBAND_MAX 2000
 #define ENCAL_IDLE 0

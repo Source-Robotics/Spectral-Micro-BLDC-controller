@@ -34,6 +34,7 @@
 #include "cogging.h"
 #include "scope.h"
 #include "encal.h"
+#include "sound.h"
 
 #define TIMING_DEBUG 0
 
@@ -542,6 +543,21 @@ void IT_callback(void)
   // the position input filter (parameter 74) starts again from the shaft whenever its modes are left
   if (controller.Error || (controller.Controller_mode != 1 && controller.Controller_mode != 4))
     Input_filter_reset();
+
+  // sound (batch 22): the tones and samples for this loop, added to the output on the d (or q) axis, only while the
+  // drive holds or moves; idle or an error stops it
+  {
+    float s = 0.0f;
+    if (Sound_active())
+    {
+      if (controller.Error == 0 && controller.Controller_mode >= 1 && controller.Controller_mode <= 4)
+        s = (float)Sound_tick();
+      else
+        Sound_stop();
+    }
+    FOC.sound_d = controller.sound_axis ? 0.0f : s;
+    FOC.sound_q = controller.sound_axis ? s : 0.0f;
+  }
 
   /// If there is no error driver can operate normaly
   /// If error is active we will immediately go to idle

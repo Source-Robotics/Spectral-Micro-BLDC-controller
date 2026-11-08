@@ -23,6 +23,7 @@
 #include "bootloader_config.h"
 #include "scope.h"
 #include "encal.h" // Encal_feature_bits (parameter 79)
+#include "sound.h"
 
 /*
 The node with the lowest ID will always win the arbitration and therefore has the highest priority.
@@ -537,6 +538,26 @@ void CAN_protocol(Stream &Serialport)
                     Scope_read_request(CAN_RX_msg.data);
                     controller.Wrong_DL = 0;
                     controller.watchdog_reset = 1;
+                }else{
+                    controller.Wrong_DL = 1;
+                }
+                break;
+            }
+
+            case IN_SOUND:{
+                if (CAN_RX_msg.type == DATA_FRAME && CAN_RX_msg.len == 8){
+                    Sound_command(CAN_RX_msg.data, CAN_RX_msg.len);
+                    controller.Wrong_DL = 0;
+                }else{
+                    controller.Wrong_DL = 1;
+                }
+                break;
+            }
+
+            case IN_SOUND_SAMPLES:{
+                if (CAN_RX_msg.type == DATA_FRAME && CAN_RX_msg.len >= 1){
+                    Sound_samples(CAN_RX_msg.data, CAN_RX_msg.len);
+                    controller.Wrong_DL = 0;
                 }else{
                     controller.Wrong_DL = 1;
                 }
@@ -1173,6 +1194,15 @@ bool Param_get(uint8_t param, int32_t *value)
     case PARAM_POLE_PAIRS:
         *value = controller.pole_pairs;
         return true;
+    case PARAM_SOUND_STATE:
+        *value = Sound_state();
+        return true;
+    case PARAM_SOUND_LIMIT_MV:
+        *value = controller.sound_limit_mv;
+        return true;
+    case PARAM_SOUND_AXIS:
+        *value = controller.sound_axis;
+        return true;
     case PARAM_FEATURES:
     {
         uint32_t bits = Encal_feature_bits();
@@ -1190,6 +1220,8 @@ bool Param_get(uint8_t param, int32_t *value)
             bits |= FEAT_INPUT_FILTER;
         if (controller.vel_int_deadband != 0)
             bits |= FEAT_DEADBAND;
+        if (Sound_active())
+            bits |= FEAT_RUN_SOUND;
         if (controller.Calibration == 1)
             bits |= FEAT_RUN_CALIBRATION;
         *value = (int32_t)bits;
@@ -1261,6 +1293,18 @@ bool Param_set(uint8_t param, int32_t value)
         if (value < 0 || value > VEL_INT_DEADBAND_MAX)
             return false;
         controller.vel_int_deadband = (uint16_t)value;
+        return true;
+    case PARAM_SOUND_LIMIT_MV:
+        if (value < 0 || value > SOUND_LIMIT_MAX_MV)
+            return false;
+        controller.sound_limit_mv = (int16_t)value;
+        if (value == 0)
+            Sound_stop();
+        return true;
+    case PARAM_SOUND_AXIS:
+        if (value < 0 || value > 1)
+            return false;
+        controller.sound_axis = (uint8_t)value;
         return true;
     case PARAM_R_MOHM:
         if (value < 1 || value > 100000)

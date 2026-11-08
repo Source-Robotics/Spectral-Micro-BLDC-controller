@@ -23,6 +23,7 @@
 #include "cogging.h"
 #include "cogcal.h"
 #include "encal.h"
+#include "sound.h"
 #include "communication_CAN.h" // Param_get, Param_set, Param_is_float (#Par)
 void Uart_param_print(Stream &Serialport, uint8_t n, bool say_unknown);
 void Uart_features_print(Stream &Serialport);
@@ -943,6 +944,7 @@ void UART_protocol(Stream &Serialport)
                 Serialport.println("  R/L <ohm/H>  Set phase resistance/inductance before Cal");
                 Serialport.println("  PP <n>       Set pole pairs before Cal");
                 Serialport.println("  Par [n[,v]]  CAN parameter n: read it, or set it to v (no n: all)");
+                Serialport.println("  Tone f,mA,ms A tone through the motor (#Tone off stops it)");
                 Serialport.println("  Save         Save current config to EEPROM");
                 Serialport.println("  Default      Reset config to factory defaults");
                 Serialport.println("");
@@ -1106,6 +1108,63 @@ void UART_protocol(Stream &Serialport)
             // The encoder table on the drive (encal.h): #Encal measures it (one shaft turn each way at 2048 ticks/s,
             // about 20 s; the shaft must be free), #Encal save also saves, #Encal all also identifies the anti-cogging
             // and saves both, #Encal stop aborts, #Encal on / off switches the correction, #Encal state shows it.
+            // A tone through the motor (batch 22): #Tone f,mA[,ms] (ms left out: 500; 0: until #Tone off); #Tone off.
+            // It plays while the drive holds or moves; from idle the drive first holds the position it is at.
+            else if (strcmp(command, "Tone") == 0)
+            {
+                if (strlen(argument) == 0 || strcmp(argument, "off") == 0)
+                {
+                    Sound_stop();
+                    Serialport.println("Tone off");
+                }
+                else
+                {
+                    const long f = atol(argument);
+                    const char *c1 = strchr(argument, ',');
+                    const long ma = c1 ? atol(c1 + 1) : 200;
+                    const char *c2 = c1 ? strchr(c1 + 1, ',') : nullptr;
+                    const long ms = c2 ? atol(c2 + 1) : 500;
+                    if (controller.Controller_mode == 0 && controller.Calibrated && controller.Error == 0)
+                    {
+                        const uint32_t irq = __get_PRIMASK();
+                        __disable_irq();
+                        PID.Feedforward_speed = 0;
+                        PID.Feedforward_current = 0;
+                        PID.V_errSum = 0;
+                        PID.Position_setpoint = controller.Position_Ticks;
+                        controller.Controller_mode = 1;
+                        if (controller.reset_pin_state == 0 && controller.sleep_pin_state == 0)
+                        {
+                            digitalWriteFast(SLEEP, HIGH);
+                            digitalWriteFast(RESET, HIGH);
+                            controller.reset_pin_state = 1;
+                            controller.sleep_pin_state = 1;
+                        }
+                        __set_PRIMASK(irq);
+                        Serialport.println("Holding the position while it plays (#Idle releases it)");
+                    }
+                    if (controller.Controller_mode >= 1 && controller.Controller_mode <= 4 && f > 0 && ma > 0 &&
+                        Sound_tone(0, (uint16_t)constrain(f, 0, 65535), (uint16_t)constrain(ma, 0, 65535),
+                                   (uint16_t)constrain(ms, 0, 65535)))
+                    {
+                        Serialport.print("Tone ");
+                        Serialport.print(f);
+                        Serialport.print(" Hz, ");
+                        Serialport.print(ma);
+                        Serialport.print(" mA, ");
+                        if (ms)
+                        {
+                            Serialport.print(ms);
+                            Serialport.println(" ms");
+                        }
+                        else
+                            Serialport.println("until #Tone off");
+                    }
+                    else
+                        Serialport.println("Tone: not played (calibrate first; 20 Hz up to half the loop rate; "
+                                           "parameter 81 not 0)");
+                }
+            }
             // Any CAN parameter by number (batch 20): #Par lists all, #Par n reads one, #Par n,v sets it
             else if (strcmp(command, "Par") == 0)
             {
