@@ -1241,7 +1241,12 @@ void UART_protocol(Stream &Serialport)
                 Serialport.println(st == COGCAL_FORWARD ? "turning forward" : st == COGCAL_BACKWARD ? "turning backward" :
                                    st == COGCAL_DONE ? "done, harmonics on" : st == COGCAL_FAILED_ABORTED ? "aborted" :
                                    st == COGCAL_FAILED_ERROR ? "failed: error or not calibrated" :
-                                   st == COGCAL_FAILED_STUCK ? "failed: the shaft did not turn" : "idle");
+                                   st == COGCAL_FAILED_STUCK ? "failed: the shaft did not turn" :
+                                   st == COGCAL_ENCODER ? "measuring the encoder table first" :
+                                   st == COGCAL_FAILED_ENCODER ? "failed: the encoder table" :
+                                   st == COGCAL_FAILED_TRIM ? "failed: the trim did not help" :
+                                   st == COGCAL_STALE ? "off: the encoder table changed, identify again" :
+                                   st == COGCAL_DONE_NO_TRIM ? "done, harmonics on, without the trim" : "idle");
                 Serialport.print("Speed ");
                 Serialport.print(cogcal_speed);
                 Serialport.print(" ticks/s, about ");

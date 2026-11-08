@@ -356,6 +356,18 @@ bool SerialPacketParser::parse(char c, char *command, char *argument)
         {
           return true;
         }
+        else if (strcmp(command, "Par") == 0) // batch 20-22
+        {
+          return true;
+        }
+        else if (strcmp(command, "Calonly") == 0) // batch 20-22
+        {
+          return true;
+        }
+        else if (strcmp(command, "Tone") == 0) // batch 20-22
+        {
+          return true;
+        }
         else if (strcmp(command, "Gripcal") == 0)
         {
           return true;
@@ -730,6 +742,18 @@ bool SerialPacketParser::parse(char c, char *command, char *argument)
           return true;
         }
         else if (strcmp(command, "Cogcal") == 0)
+        {
+          return true;
+        }
+        else if (strcmp(command, "Par") == 0) // batch 20-22
+        {
+          return true;
+        }
+        else if (strcmp(command, "Calonly") == 0) // batch 20-22
+        {
+          return true;
+        }
+        else if (strcmp(command, "Tone") == 0) // batch 20-22
         {
           return true;
         }
