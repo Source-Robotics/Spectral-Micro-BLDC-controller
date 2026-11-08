@@ -77,6 +77,8 @@ float Velocity_pi(float err_p, float err_i); // the velocity PI, clamped (batch 
 float Vel_int_setpoint(float position_error, float speed_ff); // the integral's speed setpoint, deadband 75
 void Input_filter(int32_t pos_in, float vel_in, float *position_error, float *speed); // parameter 74
 void Input_filter_reset();
+extern float Cal_saved_current_limit; // the current limit when #Cal started (batch 22d)
+void Cal_restore_current_limit();     // put it back when the calibration ends
 void Foc_frame(float theta);       // Id, Iq and the inverse transform at this electrical angle (encal.cpp)
 
 #endif

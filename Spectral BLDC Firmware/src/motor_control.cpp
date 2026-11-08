@@ -1656,6 +1656,7 @@ Confirm commutation, then find the angle offset (reversed-wiring-agnostic)
     Ticker_detach(TIM3);
     controller.Calibration = 2;
     controller.Calibrated = 0;
+    Cal_restore_current_limit(); // batch 22d
     // Reset all flags
     calib_step_magnet = 0;
     calib_step_voltage = 0;
@@ -2007,6 +2008,7 @@ void Calib_report(Stream &Serialport)
       Ticker_init(TIM3, LOOP_FREQ, IT_callback);
       controller.Error = 0;
       controller.Calibrated = 1;
+      Cal_restore_current_limit(); // the user's limit again, before the runs that follow (batch 22d)
       Encal_after_calibration(); // parameter 56: the anti-cogging and/or the encoder table follow
 
       controller.Calibration = 0;
@@ -3080,4 +3082,15 @@ void Input_filter(int32_t pos_in, float vel_in, float *position_error, float *sp
   if_pos_q += (int64_t)(if_vel * ((float)LOOP_TIME * 65536.0f));
   *position_error = (float)(if_pos_q - (int64_t)controller.Position_Ticks * 65536) * (1.0f / 65536.0f);
   *speed = if_vel;
+}
+
+/// The current limit in force when #Cal started (batch 22d): the calibration sets its own 1600 mA for its steps;
+/// it is put back when the calibration ends, so neither the runs after it nor a #Save use 1600 on a smaller motor.
+float Cal_saved_current_limit = 0.0f;
+
+void Cal_restore_current_limit()
+{
+  if (Cal_saved_current_limit > 0.0f)
+    PID.Iq_current_limit = Cal_saved_current_limit;
+  Cal_saved_current_limit = 0.0f;
 }

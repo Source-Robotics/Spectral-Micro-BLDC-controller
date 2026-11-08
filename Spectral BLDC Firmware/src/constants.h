@@ -198,7 +198,7 @@ EEPROM CONSTANTS
 // fourth 256-byte bank (I2C 0x53); without it the block is not used and anti-cogging stays off at start-up.
 #define COGGING_CRC_EEPROM 320
 #define COGGING_BLOCK_EEPROM 324
-// The encoder table block (encal.h, batch 9): CRC at 880, the block at 884-1143, into the fifth bank (I2C 0x54).
+// The encoder table block (encal.h, batch 9): CRC at 880, the block at 884-1147, into the fifth bank (I2C 0x54).
 #define ENCODER_CRC_EEPROM 880
 #define ENCODER_BLOCK_EEPROM 884
 #define ENCODER_BLOCK_VERSION 2 // 2: with the current-sense zero trims
