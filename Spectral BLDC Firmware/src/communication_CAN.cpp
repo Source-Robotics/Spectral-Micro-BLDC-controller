@@ -1297,6 +1297,53 @@ bool Param_set(uint8_t param, int32_t value)
             return false;
         controller.vel_int_deadband = (uint16_t)value;
         return true;
+    // The gains and limits by parameter too (batch 24): the same fields their own commands set (IN_KPP, IN_KPV_KIV,
+    // IN_KIIQ_KPIQ, IN_KP_KD, IN_LIMITS, IN_VLIM, IN_SETTINGS, HEARTBEAT_SETUP, IN_KT); floats as their bit pattern
+    case PARAM_KPP:
+    case PARAM_KPV:
+    case PARAM_KIV:
+    case PARAM_KPIQ:
+    case PARAM_KIIQ:
+    case PARAM_KP:
+    case PARAM_KD:
+    case PARAM_VELOCITY_LIMIT:
+    case PARAM_CURRENT_LIMIT:
+    case PARAM_KT:
+    {
+        float f;
+        memcpy(&f, &value, 4);
+        if (!(f >= 0.0f && f < 1.0e9f))
+            return false; // negative, not a number, or absurd
+        if (param == PARAM_CURRENT_LIMIT && f > (float)MAX_DRIVE_CURRENT)
+            return false;
+        switch (param)
+        {
+        case PARAM_KPP: PID.Kp_p = f; break;
+        case PARAM_KPV: PID.Kp_v = f; break;
+        case PARAM_KIV: PID.Ki_v = f; break;
+        case PARAM_KPIQ: PID.Kp_iq = f; break;
+        case PARAM_KIIQ: PID.Ki_iq = f; break;
+        case PARAM_KP: PID.KP = f; break;
+        case PARAM_KD: PID.KD = f; break;
+        case PARAM_VELOCITY_LIMIT: PID.Velocity_limit = f; break;
+        case PARAM_CURRENT_LIMIT: PID.Iq_current_limit = f; break;
+        default: controller.Kt = f; break;
+        }
+        return true;
+    }
+    case PARAM_VOLTAGE_LIMIT:
+        if (value < 0 || value > 60000)
+            return false;
+        PID.Voltage_limit = value;
+        return true;
+    case PARAM_BRAKE_COAST:
+        controller.brake_coast = value ? 1 : 0;
+        return true;
+    case PARAM_HEARTBEAT_MS:
+        if (value < 0 || value > 60000)
+            return false;
+        controller.Heartbeat_rate_ms = value;
+        return true;
     case PARAM_SOUND_LIMIT_MV:
         if (value < 0 || value > SOUND_LIMIT_MAX_MV)
             return false;

@@ -370,7 +370,7 @@ CAN BUS CONSTANTS
 #define PARAM_WD_AFTER_ACTION 5     // after hold/descend: 0 legacy, 2 brake, 3 coast
 #define PARAM_WD_TIME 6             // watchdog time ms, 0 = off (also set by IN_WATCHDOG_TIMEOUT)
 #define PARAM_WD_ACTION 7           // watchdog action 0-4 (also set by IN_WATCHDOG_TIMEOUT data[4])
-// Read-only from here: the values in force, readable over CAN at last (set them with their own commands).
+// 8-20: the gains and limits in force; readable, and since batch 24 also writable here (their own commands still work).
 // F = the 4 value bytes are an IEEE-754 float (the bit pattern, big-endian), as the gain commands send them.
 #define PARAM_KPP 8                 // F position gain (IN_KPP)
 #define PARAM_KPV 9                 // F velocity P gain (IN_KPV_KIV)
