@@ -1,6 +1,6 @@
 #pragma once
 /// Sound through the motor (2026-11, batch 22): tones, a queue of notes and streamed samples, added to the output
-/// voltage on the d axis (no torque; parameter 82 = 1 picks the q axis) while the drive holds or moves (closed-loop
+/// voltage on the q axis (a small torque ripple; parameter 82 = 0 picks the quieter d axis) while the drive holds or moves (closed-loop
 /// modes 1-4). Identical in both firmwares.
 ///
 /// Up to SOUND_CHANNELS tones at once (a chord on one motor); each from a phase accumulator and the integer sine

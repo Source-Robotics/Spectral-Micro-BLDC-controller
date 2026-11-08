@@ -126,7 +126,7 @@ typedef struct
     volatile uint16_t input_filter_hz = 0;  // parameter 74: the position input filter, Hz (0 = off)
     volatile uint16_t vel_int_deadband = 0; // parameter 75: the velocity integral's deadband, ticks (0 = off)
     volatile int16_t sound_limit_mv = SOUND_LIMIT_DEFAULT_MV; // parameter 81: the sound's voltage at most (batch 22)
-    volatile uint8_t sound_axis = 0;        // parameter 82: 0 the d axis, 1 the q axis
+    volatile uint8_t sound_axis = 1;        // parameter 82: 1 the q axis (default: much louder on the bench), 0 the d axis
     volatile uint8_t fast_trig = 0;      // parameter 65: 1 the transforms' sin/cos from the integer table (it was
                                          // 1.6 us slower than qfplib on the bench, batch 13)
     volatile uint8_t speed_estimator = SPEED_ESTIMATOR_DEFAULT;          // parameter 50

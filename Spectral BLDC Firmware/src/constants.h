@@ -483,7 +483,7 @@ CAN BUS CONSTANTS
 #define PARAM_SOUND_STATE 80        // R bits 0-7 queued events, 8-18 buffered samples, 24 tones, 25 queue, 26 samples,
                                     // 27 the samples ran dry
 #define PARAM_SOUND_LIMIT_MV 81     // the sound's voltage at most, mV (0 refuses sound; default SOUND_LIMIT_DEFAULT_MV)
-#define PARAM_SOUND_AXIS 82         // 0: on the d axis (no torque, the default), 1: on the q axis (a torque ripple)
+#define PARAM_SOUND_AXIS 82         // 1: on the q axis (a small torque ripple; the default, much louder), 0: the d axis
 #define SOUND_LIMIT_DEFAULT_MV 2000
 #define SOUND_LIMIT_MAX_MV 6000
 #define INPUT_FILTER_MAX_HZ (LOOP_FREQ / 25)
