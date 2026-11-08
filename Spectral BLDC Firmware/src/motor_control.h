@@ -79,6 +79,8 @@ void Input_filter(int32_t pos_in, float vel_in, float *position_error, float *sp
 void Input_filter_reset();
 extern float Cal_saved_current_limit; // the current limit when #Cal started (batch 22d)
 void Cal_restore_current_limit();     // put it back when the calibration ends
+void Stack_paint();                   // end of setup(): the free RAM painted (parameter 83)
+int32_t Stack_unused();               // bytes of it the stack never reached
 void Foc_frame(float theta);       // Id, Iq and the inverse transform at this electrical angle (encal.cpp)
 
 #endif

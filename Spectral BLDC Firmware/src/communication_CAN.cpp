@@ -1197,6 +1197,9 @@ bool Param_get(uint8_t param, int32_t *value)
     case PARAM_SOUND_STATE:
         *value = Sound_state();
         return true;
+    case PARAM_STACK_UNUSED:
+        *value = Stack_unused();
+        return true;
     case PARAM_SOUND_LIMIT_MV:
         *value = controller.sound_limit_mv;
         return true;

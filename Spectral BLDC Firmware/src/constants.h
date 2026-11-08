@@ -488,6 +488,7 @@ CAN BUS CONSTANTS
 #define PARAM_SOUND_AXIS 82         // 1: on the q axis (a small torque ripple; the default, much louder), 0: the d axis
 #define SOUND_LIMIT_DEFAULT_MV 2000
 #define SOUND_LIMIT_MAX_MV 6000
+#define PARAM_STACK_UNUSED 83       // R RAM between the heap and the stack never used since start, bytes (batch 23)
 #define INPUT_FILTER_MAX_HZ (LOOP_FREQ / 25)
 #define VEL_INT_DEADBAND_MAX 2000
 #define ENCAL_IDLE 0

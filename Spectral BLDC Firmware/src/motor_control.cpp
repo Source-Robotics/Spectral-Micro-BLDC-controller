@@ -3094,3 +3094,36 @@ void Cal_restore_current_limit()
     PID.Iq_current_limit = Cal_saved_current_limit;
   Cal_saved_current_limit = 0.0f;
 }
+
+/// Stack margin (batch 23, parameter 83): setup() paints the free RAM between the heap and the stack at its end; the
+/// bytes from the bottom that still hold the pattern were never used by the stack (or later heap) since then.
+extern "C" void *_sbrk(int incr);
+static uint8_t *stack_paint_lo = nullptr;
+static uint8_t *stack_paint_hi = nullptr;
+
+void Stack_paint()
+{
+  uint8_t *lo = (uint8_t *)_sbrk(0);
+  uint8_t *sp;
+  __asm volatile("mov %0, sp" : "=r"(sp));
+  uint8_t *hi = sp - 64; // leave the frames of this call alone
+  if (lo == nullptr || hi <= lo)
+    return;
+  const uint32_t irq = __get_PRIMASK();
+  __disable_irq(); // the control interrupt shares this stack: no frame of it may sit in the painted part
+  for (uint8_t *p = lo; p < hi; p++)
+    *p = 0xA5;
+  __set_PRIMASK(irq);
+  stack_paint_lo = lo;
+  stack_paint_hi = hi;
+}
+
+int32_t Stack_unused()
+{
+  if (stack_paint_lo == nullptr)
+    return -1;
+  const uint8_t *p = stack_paint_lo;
+  while (p < stack_paint_hi && *p == 0xA5)
+    p++;
+  return (int32_t)(p - stack_paint_lo);
+}

@@ -115,6 +115,7 @@ void setup()
   // Kicked every tick from IT_callback()/Update_IT_callback_calib(), so 100ms is
   // a wide margin under normal operation but catches a real hang quickly.
   IWatchdog.begin(100000);
+  Stack_paint(); // last: the free RAM painted for parameter 83 (batch 23)
 }
 
 //////////////////////////////////////////////////////////////////////////////
