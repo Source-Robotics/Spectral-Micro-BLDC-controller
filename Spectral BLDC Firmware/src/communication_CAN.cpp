@@ -1321,8 +1321,8 @@ bool Param_set(uint8_t param, int32_t value)
         case PARAM_KPP: PID.Kp_p = f; break;
         case PARAM_KPV: PID.Kp_v = f; break;
         case PARAM_KIV: PID.Ki_v = f; break;
-        case PARAM_KPIQ: PID.Kp_iq = f; break;
-        case PARAM_KIIQ: PID.Ki_iq = f; break;
+        case PARAM_KPIQ: PID.Kp_iq = f; PID.Kp_id = f; break; // both current loops, as #Kpiq and a calibration
+        case PARAM_KIIQ: PID.Ki_iq = f; PID.Ki_id = f; break; // (CAN 17 still sets the Iq loop only)
         case PARAM_KP: PID.KP = f; break;
         case PARAM_KD: PID.KD = f; break;
         case PARAM_VELOCITY_LIMIT: PID.Velocity_limit = f; break;
