@@ -27,7 +27,7 @@
 
 | **12 to 29 V** | **1.5 A** | **14-bit** | **5 kHz** | **39 × 39 mm** |
 |:-:|:-:|:-:|:-:|:-:|
-| supply, 24 V typical | phase current, 2.8 A max | magnetic encoder | control loop | 8 g, NEMA 17 holes |
+| supply, 24 V typical | motor current, 2.8 A max | encoder | control loop | NEMA 17 size, 8 g |
 
 </div>
 
@@ -63,7 +63,8 @@
 | **Update the firmware** | [latest release](https://github.com/Source-Robotics/Spectral-Micro-BLDC-controller/releases/latest) · [updating through the bootloader](https://docs.source-robotics.com/Spectral-BLDC-docs/latest/07-firmware/update/) · [a board without the bootloader](https://docs.source-robotics.com/Spectral-BLDC-docs/latest/07-firmware/bootloader/) |
 | **Use it in a gripper or a robot** | [SSG-48 gripper](https://github.com/Source-Robotics/SSG-48-adaptive-electric-gripper) · [gripper mode](https://docs.source-robotics.com/Spectral-BLDC-docs/latest/06-operation/gripper-mode/) · [guides](https://docs.source-robotics.com/Spectral-BLDC-docs/latest/guides/): mobile robot, quadruped leg, gravity compensation, teleoperation |
 
-## In this repository
+<details>
+<summary><b>What is in this repository</b></summary>
 
 | Folder | What is in it |
 |---|---|
@@ -77,6 +78,8 @@ The [latest release](https://github.com/Source-Robotics/Spectral-Micro-BLDC-cont
 firmware image (`spectral-bldc-firmware-V<number>.bin`) and its manifest (`firmware.json`);
 [Motor GUI](https://motorgui.com/) flashes it from there. [`en.stsw-link009.zip`](en.stsw-link009.zip) is the ST-LINK USB
 driver (STSW-LINK009), for the programming adapter on Windows.
+
+</details>
 
 ## Community
 
