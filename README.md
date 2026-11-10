@@ -21,6 +21,7 @@
   <a href="https://github.com/Source-Robotics/Spectral-Micro-BLDC-controller/releases/latest"><img src="https://img.shields.io/github/v/release/Source-Robotics/Spectral-Micro-BLDC-controller?style=flat-square&color=143952&label=release" alt="Release"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-GPL--3.0-143952?style=flat-square" alt="License"></a>
   <a href="https://discord.com/invite/prjUvjmGpZ"><img src="https://img.shields.io/discord/1072498136284667955?style=flat-square&logo=discord&logoColor=white&label=discord&color=292B37" alt="Discord"></a>
+  <a href="https://doi.org/10.5281/zenodo.24113621"><img src="https://img.shields.io/badge/DOI-10.5281%2Fzenodo.24113621-143952?style=flat-square" alt="DOI"></a>
 </p>
 
 <div align="center">

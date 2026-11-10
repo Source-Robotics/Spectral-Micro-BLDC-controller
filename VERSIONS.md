@@ -6,7 +6,8 @@ Which firmware your Spectral Micro runs, and which release, bootloader and manua
 
 | Release | Date | What it is | Bootloader | Files |
 |---|---|---|---|---|
-| **V107** | 2026-08-26 | PD mode over CAN uses the commanded speed; idle can brake or coast (`#Brake`); a `#Cal` fix for some motor units | required | [download](https://github.com/Source-Robotics/Spectral-Micro-BLDC-controller/releases/tag/V107) |
+| **V109** | 2026-11-10 | phase B's enable pin fixed (full torque, calibrations that pass); the driver kept awake in every mode; parameters by number, captures, the watchdog's actions, sound; bench-tuned current-loop defaults; no 108, it shares its numbers with STEPFOC from here | required | [download](https://github.com/Source-Robotics/Spectral-Micro-BLDC-controller/releases/tag/V109) |
+| V107 | 2026-08-26 | PD mode over CAN uses the commanded speed; idle can brake or coast (`#Brake`); a `#Cal` fix for some motor units | required | [download](https://github.com/Source-Robotics/Spectral-Micro-BLDC-controller/releases/tag/V107) |
 | V106 | 2026-07-06 | no dropped CAN messages in bursts; a 100 ms watchdog; CRC checks on the saved configuration; `#Help` | required | [download](https://github.com/Source-Robotics/Spectral-Micro-BLDC-controller/releases/tag/V106) |
 | V105 | 2026-07-05 | `#Cal` detects reversed phase wiring and finds the angle offset itself; `#Info` reports the true version | required | [download](https://github.com/Source-Robotics/Spectral-Micro-BLDC-controller/releases/tag/V105) |
 | V104 | 2026-06-19 | the first release for the bootloader, from `Bootloader_main`; the Kt request, the CAN voltage limit | required | [download](https://github.com/Source-Robotics/Spectral-Micro-BLDC-controller/releases/tag/V104) |
