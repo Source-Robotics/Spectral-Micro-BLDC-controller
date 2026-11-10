@@ -324,6 +324,8 @@ void CANReceive(CAN_msg_t* CAN_rx_msg)
 
   
   CAN_rx_msg->len = (CAN1->sFIFOMailBox[0].RDTR) & 0xFUL;
+  if (CAN_rx_msg->len > 8) // length codes 9-15 are legal on the bus and still mean 8 data bytes
+    CAN_rx_msg->len = 8;
   
   CAN_rx_msg->data[0] = 0xFFUL &  CAN1->sFIFOMailBox[0].RDLR;
   CAN_rx_msg->data[1] = 0xFFUL & (CAN1->sFIFOMailBox[0].RDLR >> 8);

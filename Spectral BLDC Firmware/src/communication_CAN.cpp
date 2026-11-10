@@ -107,6 +107,10 @@ void CAN_protocol(Stream &Serialport)
 
         /// Get CAN msg from buffer
         CANReceive(&CAN_RX_msg);
+        // A 29-bit frame passes the hardware filter when its bits happen to match the node (another protocol on the
+        // same bus); its id was then read as one of our commands.
+        if (CAN_RX_msg.format != STANDARD_FORMAT)
+            continue;
         /// Unpack CAN ID 
         unsigned int Node_ID = (CAN_RX_msg.id >> 7) & 0xF;
         unsigned int Command_ID = (CAN_RX_msg.id >> 1) & 0x3F;
@@ -234,6 +238,10 @@ void CAN_protocol(Stream &Serialport)
                 // Current loop
                 }else if(CAN_RX_msg.len == 2){
                     uint8_t temp_buffer2[] =  {CAN_RX_msg.data[0], CAN_RX_msg.data[1]};
+                    // One critical section, as for position and velocity: a control loop still in the old mode
+                    // between the setpoint and the mode wrote its own output over the new Iq setpoint.
+                    const uint32_t irq_torque = __get_PRIMASK();
+                    __disable_irq();
                     PID.Iq_setpoint = two_bytes_to_int(temp_buffer2);
 
                     if (PID.Reset_integral_accumulator == 1)
@@ -252,6 +260,7 @@ void CAN_protocol(Stream &Serialport)
                         }
                     }
                     controller.Controller_mode = 3;
+                    __set_PRIMASK(irq_torque);
                     controller.Wrong_DL = 0;
                     controller.watchdog_reset = 1;
 
@@ -288,6 +297,8 @@ void CAN_protocol(Stream &Serialport)
                     uint8_t temp_buffer[] =  {CAN_RX_msg.data[0], CAN_RX_msg.data[1], CAN_RX_msg.data[2]};
                     uint8_t temp_buffer1[] =  {CAN_RX_msg.data[3], CAN_RX_msg.data[4], CAN_RX_msg.data[5]};
                     uint8_t temp_buffer2[] =  {CAN_RX_msg.data[6], CAN_RX_msg.data[7]};
+                    const uint32_t irq_pd = __get_PRIMASK(); // setpoints and mode together, as for position and velocity
+                    __disable_irq();
                     PID.Position_setpoint = three_bytes_to_int(temp_buffer);
                     PID.Velocity_setpoint = three_bytes_to_int(temp_buffer1);
                     PID.Feedforward_current = two_bytes_to_int(temp_buffer2);
@@ -308,6 +319,7 @@ void CAN_protocol(Stream &Serialport)
                         }
                     }
                     controller.Controller_mode = 4;
+                    __set_PRIMASK(irq_pd);
                     controller.Wrong_DL = 0;
                     controller.watchdog_reset = 1;
 
@@ -339,8 +351,11 @@ void CAN_protocol(Stream &Serialport)
                     for (int i = 0; i < 5; i++) {
                         currentBytes[i] = CAN_RX_msg.data[i];
                         }
-                    // If current command is same as prev command
-                    Gripper.Same_command = true;
+                    // A command that differs from the previous one is new: Gripper_mode() then starts the move afresh
+                    // (and sets the flag back itself once it has seen it). Only a new command writes the flag. A repeat,
+                    // and a poll, used to set it back to "same" at once; a poll sent right after a new command could
+                    // so cancel it before the control loop ran: the move started from the old "at position", and the
+                    // gripper reported "at position" (3) while it pressed on an object (bench 2026-11-10, SSG-48).
                     for (int i = 0; i < 5; i++) {
                         if (currentBytes[i] != Gripper.previousBytes[i]) {
                             Gripper.Same_command = false;
@@ -408,7 +423,7 @@ void CAN_protocol(Stream &Serialport)
                     #if (DEBUG_COMS > 0)
                     Serialport.println("Gripper empty command ");
                     #endif
-                    Gripper.Same_command = true;
+                    // a poll: it leaves the new-command flag alone (see above)
                     //controller.Controller_mode = 6;
                     controller.watchdog_reset = 1;
                     controller.Wrong_DL = 0;
@@ -428,7 +443,11 @@ void CAN_protocol(Stream &Serialport)
             case IN_WATCHDOG_TIMEOUT:{
                 if(CAN_RX_msg.len == 5){
                     uint8_t temp_buffer[] =  {CAN_RX_msg.data[0], CAN_RX_msg.data[1], CAN_RX_msg.data[2], CAN_RX_msg.data[3]};
-                    controller.watchdog_time_ms = fourBytesToInt(temp_buffer);
+                    {
+                        const int wd_ms = fourBytesToInt(temp_buffer);
+                        controller.watchdog_time_ms = wd_ms < 0 ? 0 : wd_ms; // a negative time switched it off silently
+                    }
+                    controller.watchdog_reset = 1; // the window starts now (it used to trip at once when switched on again)
                     controller.watchdog_action = CAN_RX_msg.data[4];
                     controller.Wrong_DL = 0;
                     #if (DEBUG_COMS > 0)
@@ -584,6 +603,7 @@ void CAN_protocol(Stream &Serialport)
 
             case IN_SAVE_CONFIG:{
                 Write_config();
+                controller.watchdog_reset = 1; // the save took its time: it is not silence from the host
                 #if (DEBUG_COMS > 0)
                 Serialport.println("Received Save config");
                 #endif
@@ -625,8 +645,8 @@ void CAN_protocol(Stream &Serialport)
                 if(CAN_RX_msg.len == 8){
                     uint8_t temp_buffer[] =  {CAN_RX_msg.data[0], CAN_RX_msg.data[1], CAN_RX_msg.data[2], CAN_RX_msg.data[3]};
                     uint8_t temp_buffer2[] =  {CAN_RX_msg.data[4], CAN_RX_msg.data[5], CAN_RX_msg.data[6], CAN_RX_msg.data[7]};
-                    PID.KP = fourBytesToFloat(temp_buffer);
-                    PID.KD = fourBytesToFloat(temp_buffer2);
+                    { const float f_ = fourBytesToFloat(temp_buffer); if (f_ >= 0.0f && f_ < 1.0e9f) PID.KP = f_; } // negative or not a number: not taken
+                    { const float f_ = fourBytesToFloat(temp_buffer2); if (f_ >= 0.0f && f_ < 1.0e9f) PID.KD = f_; } // negative or not a number: not taken
                     controller.Wrong_DL = 0;
                     #if (DEBUG_COMS > 0)
                     Serialport.print("New PD loop KP gain: ");
@@ -647,8 +667,8 @@ void CAN_protocol(Stream &Serialport)
                 if(CAN_RX_msg.len == 8){
                     uint8_t temp_buffer[] =  {CAN_RX_msg.data[0], CAN_RX_msg.data[1], CAN_RX_msg.data[2], CAN_RX_msg.data[3]};
                     uint8_t temp_buffer2[] =  {CAN_RX_msg.data[4], CAN_RX_msg.data[5], CAN_RX_msg.data[6], CAN_RX_msg.data[7]};
-                    PID.Kp_iq = fourBytesToFloat(temp_buffer);
-                    PID.Ki_iq = fourBytesToFloat(temp_buffer2);
+                    { const float f_ = fourBytesToFloat(temp_buffer); if (f_ >= 0.0f && f_ < 1.0e9f) PID.Kp_iq = f_; } // negative or not a number: not taken
+                    { const float f_ = fourBytesToFloat(temp_buffer2); if (f_ >= 0.0f && f_ < 1.0e9f) PID.Ki_iq = f_; } // negative or not a number: not taken
                     controller.Wrong_DL = 0;
                     #if (DEBUG_COMS > 0)
                     Serialport.print("New Iq current loop Kp gain: ");
@@ -669,8 +689,8 @@ void CAN_protocol(Stream &Serialport)
                 if(CAN_RX_msg.len == 8){
                     uint8_t temp_buffer[] =  {CAN_RX_msg.data[0], CAN_RX_msg.data[1], CAN_RX_msg.data[2], CAN_RX_msg.data[3]};
                     uint8_t temp_buffer2[] =  {CAN_RX_msg.data[4], CAN_RX_msg.data[5], CAN_RX_msg.data[6], CAN_RX_msg.data[7]};
-                    PID.Kp_v = fourBytesToFloat(temp_buffer);
-                    PID.Ki_v = fourBytesToFloat(temp_buffer2);
+                    { const float f_ = fourBytesToFloat(temp_buffer); if (f_ >= 0.0f && f_ < 1.0e9f) PID.Kp_v = f_; } // negative or not a number: not taken
+                    { const float f_ = fourBytesToFloat(temp_buffer2); if (f_ >= 0.0f && f_ < 1.0e9f) PID.Ki_v = f_; } // negative or not a number: not taken
                     controller.Wrong_DL = 0;
                     #if (DEBUG_COMS > 0)
                     Serialport.print("New Velocity loop Kp gain: ");
@@ -690,7 +710,7 @@ void CAN_protocol(Stream &Serialport)
             case IN_KPP:{
                 if(CAN_RX_msg.len == 4){
                     uint8_t temp_buffer[] =  {CAN_RX_msg.data[0], CAN_RX_msg.data[1], CAN_RX_msg.data[2], CAN_RX_msg.data[3]};
-                    PID.Kp_p = fourBytesToFloat(temp_buffer);
+                    { const float f_ = fourBytesToFloat(temp_buffer); if (f_ >= 0.0f && f_ < 1.0e9f) PID.Kp_p = f_; } // negative or not a number: not taken
                     controller.Wrong_DL = 0;
                     #if (DEBUG_COMS > 0)
                     Serialport.print("New Position loop Kp gain: ");
@@ -709,8 +729,14 @@ void CAN_protocol(Stream &Serialport)
                 if(CAN_RX_msg.len == 8){
                     uint8_t temp_buffer[] =  {CAN_RX_msg.data[0], CAN_RX_msg.data[1], CAN_RX_msg.data[2], CAN_RX_msg.data[3]};
                     uint8_t temp_buffer2[] =  {CAN_RX_msg.data[4], CAN_RX_msg.data[5], CAN_RX_msg.data[6], CAN_RX_msg.data[7]};
-                    PID.Velocity_limit = fourBytesToFloat(temp_buffer);
-                    PID.Iq_current_limit = fourBytesToFloat(temp_buffer2);
+                    // As parameters 16 and 20: a negative limit (or not a number) is not taken, and the current limit
+                    // stops at the drive's maximum. A negative limit turned the clamps round: a runaway.
+                    const float new_velocity_limit = fourBytesToFloat(temp_buffer);
+                    const float new_current_limit = fourBytesToFloat(temp_buffer2);
+                    if (new_velocity_limit >= 0.0f && new_velocity_limit < 1.0e9f)
+                        PID.Velocity_limit = new_velocity_limit;
+                    if (new_current_limit >= 0.0f)
+                        PID.Iq_current_limit = new_current_limit > (float)MAX_DRIVE_CURRENT ? (float)MAX_DRIVE_CURRENT : new_current_limit;
                     controller.Wrong_DL = 0;
                     #if (DEBUG_COMS > 0)
                     Serialport.print("New Speed limit is: ");
@@ -731,7 +757,12 @@ void CAN_protocol(Stream &Serialport)
             case IN_VLIM:{
                 if(CAN_RX_msg.len == 4){
                     uint8_t temp_buffer[] =  {CAN_RX_msg.data[0], CAN_RX_msg.data[1], CAN_RX_msg.data[2], CAN_RX_msg.data[3]};
-                    PID.Voltage_limit = fourBytesToInt(temp_buffer);
+                    {
+                        // as parameter 17: 0 (the supply) to 60000 mV; a negative limit is not taken
+                        const int new_voltage_limit = fourBytesToInt(temp_buffer);
+                        if (new_voltage_limit >= 0 && new_voltage_limit <= 60000)
+                            PID.Voltage_limit = new_voltage_limit;
+                    }
                     controller.Wrong_DL = 0;
                     #if (DEBUG_COMS > 0)
                     Serialport.print("New Voltage limit is: ");
@@ -776,7 +807,7 @@ void CAN_protocol(Stream &Serialport)
             case IN_KT:{
                 if(CAN_RX_msg.len == 4){
                     uint8_t temp_buffer[] =  {CAN_RX_msg.data[0], CAN_RX_msg.data[1], CAN_RX_msg.data[2], CAN_RX_msg.data[3]};
-                    controller.Kt = fourBytesToFloat(temp_buffer);
+                    { const float f_ = fourBytesToFloat(temp_buffer); if (f_ >= 0.0f && f_ < 1.0e9f) controller.Kt = f_; } // negative or not a number: not taken
                     controller.Wrong_DL = 0;
                     #if (DEBUG_COMS > 0)
                     Serialport.print("New Kt is: ");
@@ -964,6 +995,9 @@ void CAN_heartbeat(uint32_t ms)
 /// @param ms 
 void CAN_watchdog(uint32_t ms){
     static uint32_t last_time_ = 0;
+    // The time now, not the one the main loop read before it handled the frames: a save takes about half a second
+    // inside the handler, and that stale time made the save itself look like half a second of silence.
+    ms = millis();
     if(controller.watchdog_time_ms != 0){
 
         if (controller.watchdog_reset == 1){
@@ -1200,6 +1234,24 @@ bool Param_get(uint8_t param, int32_t *value)
     case PARAM_STACK_UNUSED:
         *value = Stack_unused();
         return true;
+    case PARAM_BUILD_COMMIT:
+        *value = (int32_t)BUILD_COMMIT;
+        return true;
+    case PARAM_BUILD_TIME:
+        *value = (int32_t)BUILD_TIME;
+        return true;
+    case PARAM_SENSE_SAMPLE_AT:
+        *value = Sense_sample_at;
+        return true;
+    case PARAM_SENSE_SAMPLE_SEEN:
+        *value = Sense_sample_seen;
+        return true;
+    case PARAM_BOARD_ID:
+        *value = (int32_t)Board_id();
+        return true;
+    case PARAM_CALIBRATION_ID:
+        *value = (int32_t)controller.calibration_id;
+        return true;
     case PARAM_SOUND_LIMIT_MV:
         *value = controller.sound_limit_mv;
         return true;
@@ -1255,6 +1307,11 @@ bool Param_set(uint8_t param, int32_t value)
 {
     switch (param)
     {
+    case PARAM_SENSE_SAMPLE_AT:
+        if (value < -1 || value > (int32_t)TIM2->ARR)
+            return false;
+        Sense_sample_at = value;
+        break;
     case PARAM_TOOL_ID:
         if (value >= 0 && value <= 255)
             controller.tool_id = value;
@@ -1273,6 +1330,7 @@ bool Param_set(uint8_t param, int32_t value)
         break;
     case PARAM_WD_TIME:
         controller.watchdog_time_ms = (value < 0) ? 0 : value;
+        controller.watchdog_reset = 1; // the window starts now
         break;
     case PARAM_WD_ACTION:
         controller.watchdog_action = (value < 0 || value > 255) ? 0 : value;
@@ -1367,7 +1425,9 @@ bool Param_set(uint8_t param, int32_t value)
         controller.Inductance = (float)value / 1000000.0f;
         return true;
     case PARAM_POLE_PAIRS:
-        if (value < 1 || value > 200 || controller.Controller_mode != 0)
+        // 1-49 on the Spectral: 50 and more is what the product check takes for a STEPFOC calibration (EEPROM.cpp),
+        // so a saved value above it made the board report "wrong product" at the next start
+        if (value < 1 || value > 49 || controller.Controller_mode != 0)
             return false;
         controller.pole_pairs = value;
         return true;
@@ -1508,7 +1568,7 @@ void Identity_CAN()
         flags |= 1 << 4;
     if (controller.sense_zero_ok)
         flags |= 1 << 5;
-    if (controller.cogging_saved)
+    if (Cogging_is_saved())
         flags |= 1 << 6;
     if (controller.sense_zero_switching == SENSE_ZERO_SW_IN_USE)
         flags |= 1 << 7;

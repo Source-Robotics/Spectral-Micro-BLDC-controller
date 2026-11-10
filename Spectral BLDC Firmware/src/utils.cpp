@@ -93,6 +93,18 @@ void limit_norm(volatile float *x, volatile float *y, volatile float limit){
         }
     }
 
+/// The one HardwareTimer object of a timer, made the first time it is asked for. Ticker_init and Ticker_detach used to
+/// make a new one at every call and never freed it: five per calibration, out of the RAM the stack also needs, and
+/// one of them from inside the calibration interrupt.
+static HardwareTimer *Ticker_timer(TIM_TypeDef *Instance){
+
+  static HardwareTimer *timers[TIMER_NUM] = {nullptr};
+  const timer_index_t index = get_timer_index(Instance);
+  if (timers[index] == nullptr)
+    timers[index] = new HardwareTimer(Instance);
+  return timers[index];
+}
+
 /** 
  * Inits Ticker
  * Inputs are Timer instance, tick frequency and callback function
@@ -102,7 +114,7 @@ void limit_norm(volatile float *x, volatile float *y, volatile float limit){
 */
 void Ticker_init(TIM_TypeDef *Instance, int frequency, void (*int_callback)()){
 
-  HardwareTimer *MyTim = new HardwareTimer(Instance);
+  HardwareTimer *MyTim = Ticker_timer(Instance);
   MyTim->setOverflow(frequency, HERTZ_FORMAT); 
   MyTim->attachInterrupt((*int_callback));
   MyTim->resume();
@@ -113,7 +125,7 @@ void Ticker_init(TIM_TypeDef *Instance, int frequency, void (*int_callback)()){
 /// @param Instance 
 void Ticker_detach(TIM_TypeDef *Instance){
 
-  HardwareTimer *MyTim = new HardwareTimer(Instance);
+  HardwareTimer *MyTim = Ticker_timer(Instance);
   MyTim->detachInterrupt();
 }
 

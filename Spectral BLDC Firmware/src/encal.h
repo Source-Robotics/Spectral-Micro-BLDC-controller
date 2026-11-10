@@ -41,7 +41,7 @@ uint8_t Encal_chain_state(uint8_t cogcal_state); // what parameter 43 reports wh
 uint16_t Encoder_correct(uint16_t raw);          // control interrupt, where the raw count is read
 void Encoder_defaults();
 void Encoder_sanitize();
-void Encal_after_calibration(); // a calibration just succeeded: parameter 56 decides what follows
+void Encal_after_calibration(); // a calibration just succeeded: the encoder table and anti-cogging follow (not after #Calonly)
 void Encal_after_angle_calibration(); // the offset alone (#Calangle): the anti-cogging follows if 56 is not 0
 uint32_t Encal_feature_bits();      // the encoder and anti-cogging part of parameter 79
 void Encal_skip_next_after_calibration(bool skip); // #Calonly

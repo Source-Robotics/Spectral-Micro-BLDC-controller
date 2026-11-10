@@ -186,7 +186,7 @@ EEPROM CONSTANTS
 #define WD_FALLBACK_SPEED_EEPROM 272     // int ticks/s: the speed cap of descend
 #define WD_AFTER_ACTION_EEPROM 276       // int: after hold/descend, 0 legacy, 2 brake, 3 coast
 #define BOARD_PRODUCT_EEPROM 280        // int: product lock stamp, the product that calibrated this board (1, 2; 0 none)
-#define SETTINGS2_RESERVED_I2_EEPROM 284 // unused int, reserved
+#define CALIBRATION_ID_EEPROM 284       // int: a new random number at every successful calibration; 0 none yet
 #define SETTINGS2_RESERVED_I3_EEPROM 288 // unused int, reserved
 #define SETTINGS2_RESERVED_I4_EEPROM 292 // unused int, reserved
 #define SETTINGS2_RESERVED_F1_EEPROM 296 // unused float, reserved
@@ -222,6 +222,8 @@ EEPROM CONSTANTS
 #define SENSE_ZERO_SW_INTERRUPTED 4   // a command or an error came first: the bridge-off zero stays
 #define SENSE_ZERO_SW_MEASURED 5      // measured and plausible, not in use (parameter 46 switches it in)
 #define SENSE_ZERO_MAX_DEV 200           // counts from 2048 beyond which the zero is not trusted (2048 is kept)
+#define SENSE_ZERO_VBUS_WAIT_MS 500      // at start-up, how long the zero waits for the motor supply
+#define SENSE_ZERO_LATE_SETTLE 250       // control loops with the supply present and the driver asleep before a late zero
 
 // Which firmware this is, reported in OUT_IN_IDENTITY byte 0: 1 = STEPFOC, 2 = Spectral Micro
 #define PRODUCT_ID 2
@@ -279,7 +281,8 @@ CAN BUS CONSTANTS
 // Generic parameters (2026-11). A new setting gets a parameter number (PARAM_* below) instead of a command id,
 // so settings no longer use up the 64 command ids.
 // IN_PARAM_SET: data frame, DLC 5: parameter number (u8), value (i32, big-endian). No answer. Unknown numbers
-//   are ignored; values outside a parameter's range are clamped (the tool id is only taken if 0-255).
+//   are ignored; outside a parameter's range most values are refused and nothing changes, a few are
+//   clamped (6, 27, 30, 38, 44) and some become off or none (7, 24-26, 28, 34, 35).
 //   Saved by IN_SAVE_CONFIG like every other setting.
 // IN_PARAM_GET: data frame, DLC 1: parameter number. The drive answers on OUT_PARAM_VALUE.
 // OUT_PARAM_VALUE: DLC 5: parameter number, the value in force (i32, big-endian); DLC 1: unknown parameter.
@@ -423,9 +426,13 @@ CAN BUS CONSTANTS
 #define SPEED_ESTIMATOR_AVERAGE 0   // the 20-sample moving average of the count difference (as before)
 #define SPEED_ESTIMATOR_PLL 1       // a PLL whose speed is its integrator (smooth, lags)
 #define SPEED_ESTIMATOR_PLL_DIRECT 2 // the same PLL, speed = integrator + kp x error (no lag, more noise)
-#define SPEED_ESTIMATOR_DEFAULT SPEED_ESTIMATOR_AVERAGE
+#define SPEED_ESTIMATOR_DEFAULT SPEED_ESTIMATOR_PLL_DIRECT // bench 2026-11-10 (estimator_compare.py, gimbal motor):
+                                    // the direct PLL at 100 Hz allowed twice the KPV of the average (vibrates at
+                                    // 0.11 against 0.056), cut the cogging ripple 1.3-3.4x at 1500-48000 ticks/s,
+                                    // and the speed step's overshoot from about 67 % to 12 % at the same gains
 #define PARAM_SPEED_PLL_BANDWIDTH 51 // the PLLs' natural frequency, Hz (RAM)
-#define SPEED_PLL_BANDWIDTH_DEFAULT 160 // Hz: 1000 rad/s, a usual default (the STEPFOC uses 60 since its bench)
+#define SPEED_PLL_BANDWIDTH_DEFAULT 100 // Hz (bench 2026-11-10; vel_tune.py: 60 overshot more, 200 held noisier;
+                                       // the STEPFOC uses 60)
 #define SPEED_PLL_BANDWIDTH_MIN 10
 #define SPEED_PLL_BANDWIDTH_MAX (LOOP_FREQ / 20)
 #define SPEED_PLL_JUMP (CPR / 2)    // counts in one loop that are a position reset, not motion
@@ -435,7 +442,7 @@ CAN BUS CONSTANTS
 #define PARAM_ENCAL_USE 53          // 1: correct the encoder with the table (only if one was measured)
 #define PARAM_ENCAL_PP 54           // R the table's error peak to peak, 0.01 deg of the shaft
 #define PARAM_ENCAL_ONCE 55         // R its once-per-turn part (amplitude), 0.01 deg of the shaft
-#define PARAM_AFTER_CAL 56          // what runs after a successful calibration: AFTER_CAL_* (saved with the table)
+#define PARAM_AFTER_CAL 56          // no effect on the Spectral (#Cal always runs both); kept so the numbers match STEPFOC
 #define PARAM_ENCAL_OFFSET 57       // R how far the last run moved the electrical offset, 0.1 deg electrical
 #define PARAM_ID_SETPOINT 58        // the d-axis current setpoint, mA (RAM, as #Id): no torque, more phase current
 // The current-sense zero trim (batch 11): parameter 43 = 4 identifies the anti-cogging, corrects the zeros from its
@@ -447,6 +454,9 @@ CAN BUS CONSTANTS
 #define PARAM_TRIM_H1_AFTER 63      // R and after it, 0.1 mA
 #define PARAM_COMM_DELAY_US 64      // commutation delay compensation, us (0 = off, RAM; batch 12)
 #define COMM_DELAY_MAX_US 500
+#define COMM_DELAY_DEFAULT_US 234   // bench 2026-11-10 (delay_sweep.py, 20 points at 24000-120000 ticks/s, slopes within
+                                    // 2-4 % of theory, bias 0.2 deg): the drive's own time from reading to output.
+                                    // Longer than the STEPFOC's 166 us: the Spectral reads and writes through the HAL
 #define COMM_DELAY_MIN_SPEED 100   // ticks/s: below it no rotation (under 0.02 deg electrical; batch 17)
 #define PARAM_FAST_TRIG 65          // 1: sin/cos of the transforms from the integer table, 0: qfplib (default)
 // The velocity-loop details (batch 18), RAM, 0 = off (the default). 73 (an anti-windup decay) was removed in batch 19.
@@ -489,6 +499,19 @@ CAN BUS CONSTANTS
 #define SOUND_LIMIT_DEFAULT_MV 2000
 #define SOUND_LIMIT_MAX_MV 6000
 #define PARAM_STACK_UNUSED 83       // R RAM between the heap and the stack never used since start, bytes (batch 23)
+#define KV_RUNS 4                   // spins from standstill for KV, alternately forward and back
+#define KV_BRAKE_TICKS (LOOP_FREQ / 2) // braking between them
+#define KV_SPREAD_WARN_PCT 5.0f     // the log warns when they differ by more
+#define PARAM_BUILD_COMMIT 84       // R the git commit it was built from: 7 hex digits; bit 28 = with uncommitted changes
+#define PARAM_BUILD_TIME 85         // R when it was built, Unix seconds UTC
+#define PARAM_BOARD_ID 86           // R this board: the chip's unique number folded into 32 bits; never changes
+#define PARAM_SENSE_SAMPLE_AT 88    // RAM: PWM counter value (TIM2) to read the current sensors at; -1 whenever the code gets there
+#define PARAM_SENSE_SAMPLE_SEEN 89  // R where the last current reading happened: TIM2 count, +65536 while counting down
+#define PARAM_CALIBRATION_ID 87     // R a new random number at every successful calibration, saved by #Save; 0 none yet
+#ifndef BUILD_COMMIT                // set by build_id.py
+#define BUILD_COMMIT 0u
+#define BUILD_TIME 0u
+#endif
 #define INPUT_FILTER_MAX_HZ (LOOP_FREQ / 25)
 #define VEL_INT_DEADBAND_MAX 2000
 #define ENCAL_IDLE 0
@@ -502,7 +525,7 @@ CAN BUS CONSTANTS
 #define AFTER_CAL_NOTHING 0
 #define AFTER_CAL_COGGING 1         // the anti-cogging identification
 #define AFTER_CAL_BOTH 2            // the encoder table, then the anti-cogging
-#define AFTER_CAL_DEFAULT AFTER_CAL_NOTHING // until the Spectral bench (STEPFOC: both, batch 20)
+#define AFTER_CAL_DEFAULT AFTER_CAL_NOTHING // the value parameter 56 reads where none is saved
 #define MODE_ENCAL 12               // Controller_mode while the encoder table is measured (open loop)
 #define ENCAL_TICKS_PER_S 2048      // the field's speed: one shaft turn in 8 s
 #define ENCAL_RAMP_MS 300           // the current rises at the start angle first

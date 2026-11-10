@@ -22,7 +22,7 @@ static uint8_t en_chain = 0;          // 1 the anti-cogging next, 2 and save all
 static bool en_chain_failed = false;  // the encoder part of a combined run failed
 static bool en_after_cal_pending = false;
 static uint8_t en_after_what = AFTER_CAL_NOTHING; // what the pending run is
-static bool en_skip_after_cal = false;             // #Calonly: the next successful calibration skips 56
+static bool en_skip_after_cal = false;             // #Calonly: nothing follows the next successful calibration
 static uint32_t en_t0 = 0;
 static float en_saved_id = 0.0f;
 static uint8_t en_saved_use = 0;
@@ -105,6 +105,7 @@ static void en_hold()
   PID.Id_setpoint = en_saved_id;
   PID.Id_errSum = 0;
   PID.Iq_errSum = 0;
+  PID.V_errSum = 0; // nothing left from a hold before the run (it kicked the shaft when this hold began)
   PID.Position_setpoint = controller.Position_Ticks;
   PID.Feedforward_speed = 0;
   PID.Feedforward_current = 0;
@@ -159,6 +160,7 @@ void Encal_start(bool save, uint8_t then_cogcal)
 
 void Encal_abort()
 {
+  en_after_cal_pending = false; // also the runs a calibration has announced and not started yet
   if (!en_running())
     return;
   encoder.use = en_saved_use;
@@ -313,12 +315,10 @@ void Encal_after_calibration()
     en_skip_after_cal = false; // #Calonly
     return;
   }
-  if (encoder.after_cal != AFTER_CAL_NOTHING)
-  {
-    en_after_what = encoder.after_cal;
-    en_after_cal_pending = true;
-    en_t0 = millis();
-  }
+  // #Cal always runs both, whatever parameter 56 holds (as on STEPFOC)
+  en_after_what = AFTER_CAL_BOTH;
+  en_after_cal_pending = true;
+  en_t0 = millis();
 }
 
 /// @brief The electrical offset alone was calibrated again (STEPFOC #Calangle, batch 20): the encoder table stays valid,
@@ -337,8 +337,16 @@ void Encal_run()
 {
   if (en_after_cal_pending)
   {
-    if (millis() - en_t0 < 500 || controller.Controller_mode != 0)
+    if (millis() - en_t0 < 500)
       return;
+    if (controller.Controller_mode != 0)
+    {
+      // A host took the drive before the runs started. They are dropped after 3 s, not kept: they used to wait for
+      // the next idle, however much later, and then turned the motor by themselves (at a Clear Error, an Idle).
+      if (millis() - en_t0 > 3000)
+        en_after_cal_pending = false;
+      return;
+    }
     en_after_cal_pending = false;
     // and save everything when it succeeds (batch 20): a host that saved right after the calibration would
     // otherwise have missed the table and the set
@@ -378,7 +386,9 @@ void Encal_run()
     en_state = ENCAL_BACKWARD;
   if (phase != EN_FINISHED)
   {
-    const uint32_t expected_ms = 2UL * (16384UL * 1000UL / ENCAL_TICKS_PER_S) + 10000UL;
+    // one shaft turn plus two electrical turns each way: with 3 pole pairs or fewer the fixed 26 s always ran out
+    const uint32_t en_pp = (controller.pole_pairs > 0) ? (uint32_t)controller.pole_pairs : 1UL;
+    const uint32_t expected_ms = 2UL * (16384UL * 1000UL / ENCAL_TICKS_PER_S) * (en_pp + 2UL) / en_pp + 10000UL;
     if (millis() - en_t0 > expected_ms)
     {
       encoder.use = en_saved_use;
@@ -488,7 +498,10 @@ bool Encal_param_set(uint8_t param, int32_t value)
   {
   case PARAM_ENCAL:
     if (value == 0)
+    {
       Encal_abort();
+      Cogcal_abort(); // a combined run may be in its anti-cogging part
+    }
     else if (value == 1 || value == 2)
       Encal_start(value == 2, 0);
     else if (value == 3)
@@ -533,6 +546,8 @@ void Sense_trim_add(int32_t dz1, int32_t dz2)
   controller.sense2_offset += dz2;
   controller.sense1_offset_off += dz1;
   controller.sense2_offset_off += dz2;
+  controller.sense1_offset_sw += dz1; // and the switching zeros: parameter 46 used to switch the trim away
+  controller.sense2_offset_sw += dz2;
   encoder.zero_trim[0] = (int8_t)t1;
   encoder.zero_trim[1] = (int8_t)t2;
   __set_PRIMASK(irq);
@@ -552,7 +567,7 @@ uint32_t Encal_feature_bits()
     f |= FEAT_COGGING_ON;
   if (cogging.mode == COGGING_MODE_TABLE)
     f |= FEAT_COGGING_TABLE;
-  if (controller.cogging_saved)
+  if (Cogging_is_saved())
     f |= FEAT_COGGING_SAVED;
   if (encoder.zero_trim[0] != 0 || encoder.zero_trim[1] != 0)
     f |= FEAT_ZERO_TRIM;
@@ -566,14 +581,14 @@ uint32_t Encal_feature_bits()
   return f;
 }
 
-/// @brief #Calonly (true) or #Cal / #Calangle (false): whether the next successful calibration skips parameter 56.
+/// @brief #Calonly (true) or #Cal (false): whether nothing follows the next successful calibration.
 void Encal_skip_next_after_calibration(bool skip)
 {
   en_skip_after_cal = skip;
 }
 
-/// @brief What will follow the calibration that is running: AFTER_CAL_NOTHING for #Calonly, else parameter 56.
+/// @brief What will follow the calibration that is running: nothing for #Calonly, else the encoder table and anti-cogging.
 uint8_t Encal_after_calibration_planned()
 {
-  return en_skip_after_cal ? (uint8_t)AFTER_CAL_NOTHING : encoder.after_cal;
+  return en_skip_after_cal ? (uint8_t)AFTER_CAL_NOTHING : (uint8_t)AFTER_CAL_BOTH;
 }

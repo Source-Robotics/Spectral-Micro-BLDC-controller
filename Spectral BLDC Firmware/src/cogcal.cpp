@@ -43,6 +43,16 @@ static bool cc_running()
 /// Velocity mode at v ticks/s, as a velocity frame from a host would set it.
 static void cc_velocity(int32_t v)
 {
+  // Inside the drive's velocity limit. Velocity_mode() clamps the setpoint in place; a command above the limit then
+  // no longer matched cc_cmd, which reads as "a host took over": the run ended with the motor left turning.
+  const int32_t limit = (int32_t)PID.Velocity_limit;
+  if (limit > 0)
+  {
+    if (v > limit)
+      v = limit;
+    if (v < -limit)
+      v = -limit;
+  }
   const uint32_t irq = __get_PRIMASK();
   __disable_irq();
   PID.Velocity_setpoint = v;
@@ -225,7 +235,9 @@ void Cogcal_run()
     }
     return;
   }
-  const uint32_t record_ms = 16384UL * 1000UL / (cogcal_speed < 100 ? 100 : cogcal_speed); // one motor turn
+  // one motor turn at the speed commanded (cc_velocity() may have held it to the velocity limit)
+  const uint32_t cc_speed = (uint32_t)(cc_cmd < 0 ? -cc_cmd : cc_cmd);
+  const uint32_t record_ms = 16384UL * 1000UL / (cc_speed < 100 ? 100 : cc_speed);
   if (now - cc_t0 < record_ms)
     return;
   Scope_hist_end();

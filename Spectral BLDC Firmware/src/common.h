@@ -94,6 +94,8 @@ typedef struct
     volatile float Kt = 0;               // Torque constant of your BLDC motor
     volatile float flux_linkage = 0;     // Flux linkage of your BLDC motor
     volatile float KV = 0;
+    volatile float KV_runs[4] = {0, 0, 0, 0}; // each of the KV_RUNS spins
+    volatile float KV_spread_pct = 0;         // largest gap between runs of the same direction, % of the mean
 
     volatile int Max_temperature = 75;  // Max temperature in degrees
     volatile int Min_temperature = -20; // Min temperature in degrees
@@ -111,6 +113,7 @@ typedef struct
     volatile int wd_fallback_current = 0;    // mA, descend: the current applied (signed)
     volatile int wd_fallback_speed = 1000;   // ticks/s, descend: the speed cap in either direction
     volatile int wd_after_action = 0;        // after hold/descend: 0 legacy, 2 brake, 3 coast
+    volatile uint32_t calibration_id = 0;    // parameter 87: new at every successful calibration
     volatile int tool_id = 0;                // what the drive is built into: 0 none, 1 SSG-48, 11-33 MSG, 200-254 custom
     volatile bool eeprom_block2_ok = 0;      // the EEPROM has the bank settings block 2 lives in (0x51)
     volatile int board_product = 0;          // product lock stamp in block 2: 1 STEPFOC, 2 Spectral, 0 none
@@ -122,7 +125,7 @@ typedef struct
     volatile uint8_t sense_zero_switching = 0; // SENSE_ZERO_SW_*: the zero measured with the bridge switching
     volatile int sense1_offset_sw = 0;       // the switching zeros, when measured (parameters 47, 48)
     volatile int sense2_offset_sw = 0;
-    volatile uint16_t comm_delay_us = 0; // parameter 64: commutation delay compensation, us (0 = off)
+    volatile uint16_t comm_delay_us = COMM_DELAY_DEFAULT_US; // parameter 64: commutation delay compensation, us (0 = off)
     volatile uint16_t input_filter_hz = 0;  // parameter 74: the position input filter, Hz (0 = off)
     volatile uint16_t vel_int_deadband = 0; // parameter 75: the velocity integral's deadband, ticks (0 = off)
     volatile int16_t sound_limit_mv = SOUND_LIMIT_DEFAULT_MV; // parameter 81: the sound's voltage at most (batch 22)
@@ -132,6 +135,7 @@ typedef struct
     volatile uint8_t speed_estimator = SPEED_ESTIMATOR_DEFAULT;          // parameter 50
     volatile uint16_t speed_pll_bandwidth = SPEED_PLL_BANDWIDTH_DEFAULT; // parameter 51, Hz
     volatile bool sense_zero_ok = 0;         // the start-up zero was measured and within SENSE_ZERO_MAX_DEV
+    volatile bool sense_zero_wait_vbus = 0;  // no motor supply at start-up: the zero is measured once it comes
     volatile bool eeprom_block3_ok = 0;      // the EEPROM answers at 0x53, so anti-cogging block 3 can be saved
     volatile bool eeprom_block4_ok = 0;      // the EEPROM answers at 0x54, so the encoder block can be saved
     volatile bool cogging_saved = 0;         // the anti-cogging in RAM is the one in EEPROM block 3
@@ -208,6 +212,7 @@ typedef struct
     volatile int Velocity_fwd = 0;
     volatile int Velocity_bwd = 0;
     volatile int Align_stage = 0; // Calibrate_Angle_Offset_Align() progress: state index (0 = not running)
+    volatile bool Align_restart = 0; // a calibration was ended from outside (an E-stop): the alignment starts from its first stage next time
     volatile int Align_point = 0; // sweep index within the current stage
     volatile int Spin_confirm_delta = 0;   // diagnostic: encoder ticks moved during the "confirm commutation" spin test, on failure
     volatile int Spin_confirm_vbus_mV = 0; // diagnostic: VBUS_mV sampled at that same failure

@@ -106,7 +106,10 @@ bool Sound_tone(uint8_t channel, uint16_t freq_hz, uint16_t amp_ma, uint16_t ms)
   const uint32_t irq = __get_PRIMASK();
   __disable_irq();
   volatile SoundChannel &c = ch[channel];
-  if (freq_hz == 0 || amp_ma == 0 || !freq_ok(freq_hz))
+  // a pitch the drive cannot play (under 20 Hz, or half the loop rate and above) silences the channel and says so:
+  // it used to answer as if the tone played
+  const bool unplayable = (freq_hz != 0 && amp_ma != 0 && !freq_ok(freq_hz));
+  if (freq_hz == 0 || amp_ma == 0 || unplayable)
     c.on = 0;
   else
   {
@@ -117,7 +120,7 @@ bool Sound_tone(uint8_t channel, uint16_t freq_hz, uint16_t amp_ma, uint16_t ms)
     any = 1;
   }
   __set_PRIMASK(irq);
-  return true;
+  return !unplayable;
 }
 
 void Sound_command(const uint8_t *data, uint8_t len)
@@ -138,16 +141,22 @@ void Sound_command(const uint8_t *data, uint8_t len)
   {
     if (channel >= SOUND_CHANNELS || limit_mv() <= 0)
       break;
-    const uint16_t next = (uint16_t)((q_head + 1) % SOUND_QUEUE_LEN);
-    if (next == q_tail)
-      break; // full: dropped (parameter 80 says how many are queued)
-    SoundEvent &e = queue[q_head];
+    SoundEvent e;
     e.freq = freq_ok(a) ? a : 0;
     e.amp_mv = e.freq ? mv_for(a, b) : 0;
     e.ms = c;
     e.channel = channel;
-    __asm volatile("" ::: "memory"); // the event is written before the interrupt may take it
-    q_head = next;
+    // Appended with the interrupt held off: Sound_stop() runs in it (idle, an error) and empties the queue; landing
+    // between reading the head and writing it back, it left the head pointing past old events, which then played.
+    const uint32_t irq = __get_PRIMASK();
+    __disable_irq();
+    const uint16_t next = (uint16_t)((q_head + 1) % SOUND_QUEUE_LEN);
+    if (next != q_tail) // full: dropped (parameter 80 says how many are queued)
+    {
+      queue[q_head] = e;
+      q_head = next;
+    }
+    __set_PRIMASK(irq);
     break;
   }
   case 3: // play the queue
@@ -203,15 +212,19 @@ void Sound_command(const uint8_t *data, uint8_t len)
 
 void Sound_samples(const uint8_t *data, uint8_t len)
 {
+  // One frame (at most 8 samples) with the interrupt held off, like the note queue: Sound_stop() in the interrupt
+  // empties the ring, and landing inside the loop it left the head past up to 1023 old samples, which then played.
+  const uint32_t irq = __get_PRIMASK();
+  __disable_irq();
   for (uint8_t i = 0; i < len; i++)
   {
     const uint16_t next = (uint16_t)((r_head + 1) % SOUND_RING_LEN);
     if (next == r_tail)
-      return; // full: the rest is dropped
+      break; // full: the rest is dropped
     ring[r_head] = (int8_t)data[i];
-    __asm volatile("" ::: "memory");
     r_head = next;
   }
+  __set_PRIMASK(irq);
 }
 
 int32_t Sound_tick()

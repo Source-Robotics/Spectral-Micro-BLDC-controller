@@ -267,7 +267,7 @@ static void Load_settings_from_eeprom()
 // --- Settings block 2 (see constants.h: block 1 is frozen; new settings go here) ---
 static const unsigned int SETTINGS2_INT_ADDRS[] = {
     TOOL_ID_EEPROM, WD_FALLBACK_TIME_EEPROM, WD_FALLBACK_CURRENT_EEPROM, WD_FALLBACK_SPEED_EEPROM,
-    WD_AFTER_ACTION_EEPROM, BOARD_PRODUCT_EEPROM, SETTINGS2_RESERVED_I2_EEPROM,
+    WD_AFTER_ACTION_EEPROM, BOARD_PRODUCT_EEPROM, CALIBRATION_ID_EEPROM,
     SETTINGS2_RESERVED_I3_EEPROM, SETTINGS2_RESERVED_I4_EEPROM, SETTINGS2_FEATURE_FLAGS_EEPROM};
 static const unsigned int SETTINGS2_FLOAT_ADDRS[] = {
     SETTINGS2_RESERVED_F1_EEPROM, SETTINGS2_RESERVED_F2_EEPROM, SETTINGS2_RESERVED_F3_EEPROM,
@@ -285,6 +285,7 @@ static uint16_t Compute_settings2_crc_from_eeprom()
 /// Set_Default_settings2_block() writes.
 static void Settings2_defaults_to_ram()
 {
+  controller.calibration_id = 0;
   controller.tool_id = 0;
   controller.wd_fallback_time_ms = 2000;
   controller.wd_fallback_current = 0;
@@ -315,6 +316,7 @@ void Settings2_sanitize()
 static void Load_settings2_from_eeprom()
 {
   controller.tool_id = readInt(TOOL_ID_EEPROM);
+  controller.calibration_id = (uint32_t)readInt(CALIBRATION_ID_EEPROM);
   controller.wd_fallback_time_ms = readInt(WD_FALLBACK_TIME_EEPROM);
   controller.wd_fallback_current = readInt(WD_FALLBACK_CURRENT_EEPROM);
   controller.wd_fallback_speed = readInt(WD_FALLBACK_SPEED_EEPROM);
@@ -335,7 +337,7 @@ static void Set_Default_settings2_block()
   writeInt(WD_FALLBACK_SPEED_EEPROM, controller.wd_fallback_speed);
   writeInt(WD_AFTER_ACTION_EEPROM, controller.wd_after_action);
   writeInt(BOARD_PRODUCT_EEPROM, 0);
-  writeInt(SETTINGS2_RESERVED_I2_EEPROM, 0);
+  writeInt(CALIBRATION_ID_EEPROM, 0);
   writeInt(SETTINGS2_RESERVED_I3_EEPROM, 0);
   writeInt(SETTINGS2_RESERVED_I4_EEPROM, 0);
   writeFloat(SETTINGS2_RESERVED_F1_EEPROM, 0);
@@ -417,6 +419,7 @@ static void Write_settings2_block()
   Settings2_sanitize();
   writeInt(BOARD_PRODUCT_EEPROM, controller.board_product);
   writeInt(TOOL_ID_EEPROM, controller.tool_id);
+  writeInt(CALIBRATION_ID_EEPROM, (int32_t)controller.calibration_id);
   writeInt(WD_FALLBACK_TIME_EEPROM, controller.wd_fallback_time_ms);
   writeInt(WD_FALLBACK_CURRENT_EEPROM, controller.wd_fallback_current);
   writeInt(WD_FALLBACK_SPEED_EEPROM, controller.wd_fallback_speed);
@@ -448,6 +451,24 @@ void Init_EEPROM()
   // The encoder block (encal.h) reaches into the fifth bank (0x54).
   Wire.beginTransmission(DEVICEADDRESS | 0x04);
   controller.eeprom_block4_ok = (Wire.endTransmission() == 0);
+}
+
+/// A block's CRC check, believed "wrong" only after three readings in a row. One misread on the I2C bus used to be
+/// enough for the block's defaults to be written over a stored calibration. After a first mismatch the block is
+/// also loaded into RAM again: its values may come from the same bad reading.
+static bool Block_crc_ok(uint16_t (*compute)(), unsigned int crc_address, void (*reload)())
+{
+  for (int attempt = 0; attempt < 3; attempt++)
+  {
+    if (attempt > 0)
+    {
+      delay(2);
+      reload();
+    }
+    if (compute() == (uint16_t)readInt(crc_address))
+      return true;
+  }
+  return false;
 }
 
 /// @brief Read the config saved in the EEPROM
@@ -489,7 +510,7 @@ void read_config()
   {
     writeInt(CALIBRATION_CRC_EEPROM, (int32_t)Compute_calibration_crc_from_eeprom());
   }
-  else if (Compute_calibration_crc_from_eeprom() != (uint16_t)stored_calib_crc)
+  else if (!Block_crc_ok(Compute_calibration_crc_from_eeprom, CALIBRATION_CRC_EEPROM, Load_calibration_from_eeprom))
   {
     Set_Default_calibration_block();
   }
@@ -499,7 +520,7 @@ void read_config()
   {
     writeInt(SETTINGS_CRC_EEPROM, (int32_t)Compute_settings_crc_from_eeprom());
   }
-  else if (Compute_settings_crc_from_eeprom() != (uint16_t)stored_settings_crc)
+  else if (!Block_crc_ok(Compute_settings_crc_from_eeprom, SETTINGS_CRC_EEPROM, Load_settings_from_eeprom))
   {
     Set_Default_settings_block();
   }
@@ -509,8 +530,7 @@ void read_config()
   if (controller.eeprom_block2_ok)
   {
     Load_settings2_from_eeprom();
-    int32_t stored_settings2_crc = readInt(SETTINGS2_CRC_EEPROM);
-    if (Compute_settings2_crc_from_eeprom() != (uint16_t)stored_settings2_crc)
+    if (!Block_crc_ok(Compute_settings2_crc_from_eeprom, SETTINGS2_CRC_EEPROM, Load_settings2_from_eeprom))
     {
       Set_Default_settings2_block();
     }
@@ -707,6 +727,16 @@ static uint16_t Cogging_crc(const CoggingBlock *block)
   return crc;
 }
 
+/// The CRC of block 3 as it was last saved or loaded.
+static uint16_t cogging_saved_crc = 0;
+
+/// @brief True while the anti-cogging in RAM is what block 3 holds: saved or loaded, and not changed since. A new
+/// identification, or a changed mode or scale, makes it false until the next save (#Info used to keep saying "saved").
+bool Cogging_is_saved()
+{
+  return controller.cogging_saved && Cogging_crc(&cogging) == cogging_saved_crc;
+}
+
 /// @brief Save anti-cogging block 3: only the 16-byte pages that changed are written, then the CRC.
 void Write_cogging_map()
 {
@@ -730,6 +760,7 @@ void Write_cogging_map()
   const int32_t crc = (int32_t)Cogging_crc(&cogging);
   if (readInt(COGGING_CRC_EEPROM) != crc) // a save with nothing changed writes nothing
     writeInt(COGGING_CRC_EEPROM, crc);
+  cogging_saved_crc = (uint16_t)crc;
   controller.cogging_saved = 1;
 }
 
@@ -744,30 +775,33 @@ void Read_cogging_map()
   }
   CoggingBlock block;
   uint8_t *p = (uint8_t *)&block;
-  unsigned int done = 0;
-  while (done < sizeof(CoggingBlock))
+  for (int attempt = 0; attempt < 3; attempt++) // one misread must not switch the anti-cogging off until the next start
   {
-    const unsigned int addr = COGGING_BLOCK_EEPROM + done;
-    unsigned int n = 16 - (addr % 16);
-    if (n > sizeof(CoggingBlock) - done)
-      n = sizeof(CoggingBlock) - done;
-    eeprom.readBlock(addr, p + done, n);
-    done += n;
+    unsigned int done = 0;
+    while (done < sizeof(CoggingBlock))
+    {
+      const unsigned int addr = COGGING_BLOCK_EEPROM + done;
+      unsigned int n = 16 - (addr % 16);
+      if (n > sizeof(CoggingBlock) - done)
+        n = sizeof(CoggingBlock) - done;
+      eeprom.readBlock(addr, p + done, n);
+      done += n;
+    }
+    const uint32_t stored = (uint32_t)readInt(COGGING_CRC_EEPROM);
+    if ((stored >> 16) == 0 && (uint16_t)stored == Cogging_crc(&block) && block.version == COGGING_BLOCK_VERSION)
+    {
+      const uint32_t irq = __get_PRIMASK();
+      __disable_irq(); // the control loop may be running (Set_Default_config)
+      memcpy(&cogging, &block, sizeof(CoggingBlock));
+      Cogging_sanitize();
+      __set_PRIMASK(irq);
+      cogging_saved_crc = Cogging_crc(&cogging);
+      controller.cogging_saved = 1;
+      return;
+    }
+    delay(2);
   }
-  const uint32_t stored = (uint32_t)readInt(COGGING_CRC_EEPROM);
-  if ((stored >> 16) == 0 && (uint16_t)stored == Cogging_crc(&block) && block.version == COGGING_BLOCK_VERSION)
-  {
-    const uint32_t irq = __get_PRIMASK();
-    __disable_irq(); // the control loop may be running (Set_Default_config)
-    memcpy(&cogging, &block, sizeof(CoggingBlock));
-    Cogging_sanitize();
-    __set_PRIMASK(irq);
-    controller.cogging_saved = 1;
-  }
-  else
-  {
-    Cogging_defaults();
-  }
+  Cogging_defaults();
 }
 
 /// CRC-16 of the encoder block as it is in RAM
@@ -815,27 +849,29 @@ void Read_encoder_map()
   }
   EncoderBlock block;
   uint8_t *p = (uint8_t *)&block;
-  unsigned int done = 0;
-  while (done < sizeof(EncoderBlock))
+  for (int attempt = 0; attempt < 3; attempt++) // one misread must not switch the encoder table off until the next start
   {
-    const unsigned int addr = ENCODER_BLOCK_EEPROM + done;
-    unsigned int n = 16 - (addr % 16);
-    if (n > sizeof(EncoderBlock) - done)
-      n = sizeof(EncoderBlock) - done;
-    eeprom.readBlock(addr, p + done, n);
-    done += n;
+    unsigned int done = 0;
+    while (done < sizeof(EncoderBlock))
+    {
+      const unsigned int addr = ENCODER_BLOCK_EEPROM + done;
+      unsigned int n = 16 - (addr % 16);
+      if (n > sizeof(EncoderBlock) - done)
+        n = sizeof(EncoderBlock) - done;
+      eeprom.readBlock(addr, p + done, n);
+      done += n;
+    }
+    const uint32_t stored = (uint32_t)readInt(ENCODER_CRC_EEPROM);
+    if ((stored >> 16) == 0 && (uint16_t)stored == Encoder_crc(&block) && block.version == ENCODER_BLOCK_VERSION)
+    {
+      const uint32_t irq = __get_PRIMASK();
+      __disable_irq(); // the control loop may be running (Set_Default_config)
+      memcpy(&encoder, &block, sizeof(EncoderBlock));
+      Encoder_sanitize();
+      __set_PRIMASK(irq);
+      return;
+    }
+    delay(2);
   }
-  const uint32_t stored = (uint32_t)readInt(ENCODER_CRC_EEPROM);
-  if ((stored >> 16) == 0 && (uint16_t)stored == Encoder_crc(&block) && block.version == ENCODER_BLOCK_VERSION)
-  {
-    const uint32_t irq = __get_PRIMASK();
-    __disable_irq(); // the control loop may be running (Set_Default_config)
-    memcpy(&encoder, &block, sizeof(EncoderBlock));
-    Encoder_sanitize();
-    __set_PRIMASK(irq);
-  }
-  else
-  {
-    Encoder_defaults();
-  }
+  Encoder_defaults();
 }

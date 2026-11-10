@@ -81,6 +81,7 @@ void Product_stamp_at_boot();
 void Product_set_stamp(int product);
 void Read_cogging_map();
 void Write_cogging_map();
+bool Cogging_is_saved(); // the anti-cogging in RAM is what the EEPROM holds
 void Read_encoder_map();
 void Write_encoder_map();
 

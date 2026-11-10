@@ -100,7 +100,9 @@ void SystemClock_Config(void)
 		_Error_Handler(__FILE__, __LINE__);
 	}
 
-	HAL_RCC_MCOConfig(RCC_MCO, RCC_MCO1SOURCE_HSE, RCC_MCODIV_1);
+	// No HAL_RCC_MCOConfig() here. It was in this function up to V107 and turned PA8 into the 8 MHz clock output
+	// (MCO). PA8 is EN2, the phase-B enable of the gate driver: phase B then ran on a clock instead of a level, and
+	// every digitalWriteFast(EN2, ...) was ignored (found 2026-11-10; standards note 2026-11-spectral-109-fault-analysis).
 
 	/**Configure the Systick interrupt time
 	 */

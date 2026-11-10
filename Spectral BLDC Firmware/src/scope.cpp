@@ -175,10 +175,16 @@ void Scope_tick()
 }
 
 /// @brief Start (mode 1-4) or stop (0) a capture. Stopping keeps what was recorded.
-static void Capture_set_trigger(uint8_t mode)
+static bool Capture_set_trigger(uint8_t mode)
 {
   if (mode > TRIGGER_FALLING)
     mode = TRIGGER_STOP;
+  // The encoder-table and anti-cogging runs keep their sums in the capture buffer (Scope_scratch()): a capture armed
+  // while one turns the motor would write over them and the run would save a wrong table. Not armed until it is done.
+  const uint8_t en = Encal_state();
+  const uint8_t cc = Cogcal_state();
+  if (mode != TRIGGER_STOP && (en == ENCAL_FORWARD || en == ENCAL_BACKWARD || cc == COGCAL_FORWARD || cc == COGCAL_BACKWARD))
+    return false;
   const uint32_t irq = __get_PRIMASK();
   __disable_irq();
   cap_mode = mode;
@@ -200,6 +206,7 @@ static void Capture_set_trigger(uint8_t mode)
     cap_state = CAPTURE_ARMED;
   }
   __set_PRIMASK(irq);
+  return true;
 }
 
 /// @brief Start a histogram over x (clears it), or stop it (HIST_X_OFF, keeps the data).
@@ -436,8 +443,7 @@ bool Scope_param_set(uint8_t param, int32_t value)
     cap_divider = (value < 1) ? 1 : (value > 65535 ? 65535 : (uint16_t)value);
     return true;
   case PARAM_CAPTURE_TRIGGER:
-    Capture_set_trigger((value >= 0 && value <= TRIGGER_FALLING) ? (uint8_t)value : TRIGGER_STOP);
-    return true;
+    return Capture_set_trigger((value >= 0 && value <= TRIGGER_FALLING) ? (uint8_t)value : TRIGGER_STOP);
   case PARAM_CAPTURE_LEVEL:
     cap_level = Sat16(value);
     return true;
@@ -445,11 +451,19 @@ bool Scope_param_set(uint8_t param, int32_t value)
     cap_pretrigger = (value < 0) ? 0 : (value > SCOPE_LEN - 1 ? SCOPE_LEN - 1 : (uint16_t)value);
     return true;
   case PARAM_HIST_X:
-    Hist_set_x((value >= 0 && value <= HIST_X_ENCODER) ? (uint8_t)value : HIST_X_OFF);
-    return true;
   case PARAM_HIST_Y:
-    hist_y = (value >= 0 && value < SIGNAL_COUNT) ? (uint8_t)value : SIGNAL_NONE;
+  {
+    // The anti-cogging identification measures with the histogram: changed under it, the run would fit another
+    // signal, switch the result on and save it.
+    const uint8_t cc = Cogcal_state();
+    if (cc == COGCAL_FORWARD || cc == COGCAL_BACKWARD)
+      return false;
+    if (param == PARAM_HIST_X)
+      Hist_set_x((value >= 0 && value <= HIST_X_ENCODER) ? (uint8_t)value : HIST_X_OFF);
+    else
+      hist_y = (value >= 0 && value < SIGNAL_COUNT) ? (uint8_t)value : SIGNAL_NONE;
     return true;
+  }
   case PARAM_COGGING_MODE:
     if (value == COGGING_MODE_HARMONICS || value == COGGING_MODE_TABLE)
     {
@@ -465,7 +479,10 @@ bool Scope_param_set(uint8_t param, int32_t value)
     return true;
   case PARAM_COGCAL:
     if (value == 0)
+    {
+      Encal_abort(); // a combined run (3) may still be in its encoder part: it used to go on, and start the anti-cogging
       Cogcal_abort();
+    }
     else if (value == 1 || value == 2)
       Cogcal_start(value == 2);
     else if (value == 3)

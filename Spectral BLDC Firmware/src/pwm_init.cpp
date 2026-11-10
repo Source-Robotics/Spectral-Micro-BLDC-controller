@@ -192,6 +192,13 @@ static void pwm_resolve(int ulPin, HardwareTimer **tmr_out, uint32_t *channel_ou
 */
 void pwm_set(int ulPin, uint32_t value, int resolution)
 {
+  // 0 to full scale. A duty below zero arrives here as a huge unsigned number and became 100 %: the phase that
+  // should have been off went fully on (a tone added to a saturated output, an open-loop voltage above the supply).
+  const uint32_t full_scale = (1UL << resolution) - 1UL;
+  if ((int32_t)value < 0)
+    value = 0;
+  else if (value > full_scale)
+    value = full_scale;
   // Fast path: pin already resolved (the normal case -- called every control-loop tick
   // with one of a small fixed set of pins).
   for (int i = 0; i < 4; i++)
