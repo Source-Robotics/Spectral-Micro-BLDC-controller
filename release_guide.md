@@ -135,13 +135,19 @@ the short 7-char form in prose).
 Prefer the `gh` CLI if it's installed:
 
 ```
+cp Binaries/firmware.bin spectral-bldc-firmware-VNNN.bin
 gh release create VNNN \
   --target <full-commit-hash> \
   --title "Release NNN" \
   --notes-file release_body.md \
-  "Binaries/firmware.bin#spectral-bldc-firmware-VNNN.bin" \
+  spectral-bldc-firmware-VNNN.bin \
   firmware.json
 ```
+
+Copy the binary to its release name first. `gh`'s `file#text` form sets only the
+asset's display label: `"Binaries/firmware.bin#spectral-bldc-firmware-VNNN.bin"` uploads an asset named
+`firmware.bin`, and the web flasher, which downloads the name in `firmware.json`,
+gets a 404 (V109 hit this; the asset was replaced before publishing).
 
 Pass `--target` as the full commit hash, not the branch name — `Bootloader_main`
 keeps moving, and you want the release pinned to the exact commit that was
