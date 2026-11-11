@@ -70,9 +70,7 @@
 | Folder | What is in it |
 |---|---|
 | [`Spectral BLDC Firmware`](Spectral%20BLDC%20Firmware/) | the firmware (PlatformIO, STM32F103CB): on `main` the one for boards without the bootloader (release 101 and earlier, no longer updated); releases from 104 on are built from the [`Bootloader_main`](https://github.com/Source-Robotics/Spectral-Micro-BLDC-controller/tree/Bootloader_main) branch |
-| [`Binaries`](Binaries/) | `firmware.bin`, the build of this branch, for a board without the bootloader |
 | [`STEP files`](STEP%20files/) | the board and an example mounting bracket |
-| [`Test scripts`](Test%20scripts/) | `PI_current_loop_calib.py`, the current loop's PI gains from a motor's resistance and inductance |
 | [`Photos`](Photos/) | product photos |
 
 The [latest release](https://github.com/Source-Robotics/Spectral-Micro-BLDC-controller/releases/latest) has the
