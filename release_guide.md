@@ -16,8 +16,7 @@ keeps describing what we actually do.
 
 ## The four things a release produces
 
-1. A commit on `Bootloader_main` containing the source change **and** the
-   rebuilt `Binaries/firmware.bin`, with `FIRMWARE_VERSION` bumped.
+1. A commit on `Bootloader_main` containing the source change, with `FIRMWARE_VERSION` bumped.
 2. An annotated git tag `VNNN` on that commit, pushed to `origin`.
 3. A GitHub Release (`Release NNN`) on that tag, with a changelog body.
 4. Two files attached to that Release: `spectral-bldc-firmware-VNNN.bin` and
@@ -26,16 +25,14 @@ keeps describing what we actually do.
 (3) and (4) are **not** git tags or repo files — they only exist on GitHub.
 Pushing the tag alone does not create them; see step 7.
 
-### Why there are two copies of the binary
+### Where the binary goes
 
-- `Binaries/firmware.bin` — generic filename, committed to the repo, updated
-  every release. Lets you `git log`/`git blame`/diff binary size across
-  history and gives tooling a stable in-repo path.
-- `spectral-bldc-firmware-VNNN.bin` — versioned filename, uploaded as a
-  **Release asset**, never committed to the repo. This is the immutable,
-  downloadable artifact that `firmware.json` points at and that the web
-  flasher fetches for a specific version. Don't skip either one — they serve
-  different consumers.
+The build output is uploaded as `spectral-bldc-firmware-VNNN.bin`, a **Release asset**,
+never committed to the repo. This is the immutable, downloadable artifact
+that `firmware.json` points at and that the web flasher fetches for a
+specific version. Until release 109 a copy also went into
+`Binaries/firmware.bin`; nothing read it, so the folder was removed on
+2026-11-11 (git history keeps the old copies).
 
 ---
 
@@ -72,11 +69,10 @@ Confirm it actually built clean (no errors) and check the size line against
 `board_upload.maximum_size` in `platformio.ini` so you're not silently over
 flash budget.
 
-### 3. Update the in-repo binary and commit
+### 3. Commit
 
 ```
-cp "Spectral BLDC Firmware/.pio/build/genericSTM32F103CB/firmware.bin" "Binaries/firmware.bin"
-git add "Binaries/firmware.bin" <the changed source files>
+git add <the changed source files>
 git commit -m "<summary> (VNNN)
 
 <changelog body, same content that will go in the GitHub Release>
@@ -86,9 +82,7 @@ Bump FIRMWARE_VERSION to NNN.
 Co-Authored-By: Claude <model> <noreply@anthropic.com>"
 ```
 
-Source + binary go in **one commit** (this is what V105/V106 did — don't
-split "code change" and "update binaries" into separate commits unless
-there's a real reason to). Include a `Co-Authored-By` trailer when the
+The source change and the version bump go in **one commit**. Include a `Co-Authored-By` trailer when the
 change was AI-assisted, matching V105/V106.
 
 ### 4. Tag and push
@@ -106,8 +100,8 @@ bootloader branch existed; stay with annotated going forward.)
 ### 5. Compute the release artifact's hash
 
 ```
-sha256sum Binaries/firmware.bin
-wc -c < Binaries/firmware.bin
+sha256sum "Spectral BLDC Firmware/.pio/build/genericSTM32F103CB/firmware.bin"
+wc -c < "Spectral BLDC Firmware/.pio/build/genericSTM32F103CB/firmware.bin"
 ```
 
 ### 6. Write `firmware.json`
@@ -135,7 +129,7 @@ the short 7-char form in prose).
 Prefer the `gh` CLI if it's installed:
 
 ```
-cp Binaries/firmware.bin spectral-bldc-firmware-VNNN.bin
+cp "Spectral BLDC Firmware/.pio/build/genericSTM32F103CB/firmware.bin" spectral-bldc-firmware-VNNN.bin
 gh release create VNNN \
   --target <full-commit-hash> \
   --title "Release NNN" \
@@ -145,7 +139,7 @@ gh release create VNNN \
 ```
 
 Copy the binary to its release name first. `gh`'s `file#text` form sets only the
-asset's display label: `"Binaries/firmware.bin#spectral-bldc-firmware-VNNN.bin"` uploads an asset named
+asset's display label: `"firmware.bin#spectral-bldc-firmware-VNNN.bin"` uploads an asset named
 `firmware.bin`, and the web flasher, which downloads the name in `firmware.json`,
 gets a 404 (V109 hit this; the asset was replaced before publishing).
 
