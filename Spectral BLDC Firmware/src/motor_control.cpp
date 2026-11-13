@@ -2824,15 +2824,14 @@ void Collect_data2()
 #define POSITION_TOLERANCE 5              // ticks: within this of the target a move has arrived
 #define VELOCITY_CONTACT_THRESHOLD 500.0f // ticks/s: slower than this counts as standing still
 #define CURRENT_CONTACT_RATIO 0.8f        // of the grip current: more than this, standing still, is a stall
-// While the gripper holds a position it has reached, a position error this small counts as none (ticks; one
-// position count is about 40 to 170 ticks, so the position it reports does not change). Friction holds the jaws
+// While the gripper holds a position it has reached, a small position error counts as none: a quarter of one
+// position count, and this many ticks at most (a count is 37 ticks on the SSG-48, 65 to 170 on the MSG), so
+// the position it reports does not change and a move of one count is always a move. Friction holds the jaws
 // there. Without it the speed loop's integral wound up against the friction for a second or more to move the
-// last ticks, and kept that current afterwards.
+// last ticks, and kept that current afterwards. Once holding, the jaws count as inside until they are twice
+// as far off: with one limit, jaws resting a tick outside it went in and out with the encoder's noise, and
+// the integral was dropped each time (a current that sawed between 0 and 100 mA and never moved them).
 #define GRIPPER_HOLD_DEADZONE 16
-// Once holding, the jaws count as inside until they are this far off (ticks). With one limit, jaws resting a
-// tick outside it went in and out with the encoder's noise, and the integral was dropped each time: a current
-// that sawed between 0 and 100 mA and never moved them (bench 2026-11-13).
-#define GRIPPER_HOLD_RELEASE 32
 // The last stretch of a move slows down: the speed is at most the slowest speed plus this many ticks/s per
 // tick left to go (1/s). At full speed the jaws arrived at 60000 ticks/s, ran 200 ticks past the target and
 // crept back for a second; now they arrive at the slowest speed whatever the speed of the move.
@@ -2909,9 +2908,17 @@ void Gripper_mode()
     Driver_wake(); // the active gripper drives the bridge; the idle branch below puts the driver to sleep
     int pos_error = abs(PID.Position_setpoint - controller.Position_Ticks);
 
+    // the hold's dead zone for this gripper (GRIPPER_HOLD_DEADZONE): a quarter of a count, never less than the
+    // arrival window
+    int hold_zone = abs(Gripper.max_open_position - Gripper.max_closed_position) / (255 * 4);
+    if (hold_zone > GRIPPER_HOLD_DEADZONE)
+      hold_zone = GRIPPER_HOLD_DEADZONE;
+    if (hold_zone <= POSITION_TOLERANCE)
+      hold_zone = POSITION_TOLERANCE + 1;
+
     // ✅ If within tolerance, mark as at position (and never unset again). A new command for where the jaws
-    // already rest (inside what the hold allows) is there at once: no move for a few ticks.
-    if (pos_error < POSITION_TOLERANCE || (new_command && pos_error <= GRIPPER_HOLD_RELEASE))
+    // already rest (inside the dead zone) is there at once: no move for a few ticks.
+    if (pos_error < POSITION_TOLERANCE || (new_command && pos_error <= hold_zone))
     {
       Gripper.At_position = 1;
     }
@@ -2923,11 +2930,11 @@ void Gripper_mode()
       // the few ticks left: a second or more of current after every move, and a current that stayed (bench
       // 2026-11-13, MSG). So the integral is dropped when the jaws arrive, and again whenever they come back
       // inside the dead zone; while they hold, the position error counts as none and friction keeps them.
-      const bool inside = pos_error <= (holding ? GRIPPER_HOLD_RELEASE : GRIPPER_HOLD_DEADZONE);
+      const bool inside = pos_error <= (holding ? 2 * hold_zone : hold_zone);
       if (inside && !holding)
         PID.V_errSum = 0;
       holding = inside;
-      position_hold_deadzone = holding ? GRIPPER_HOLD_RELEASE : 0; // outside it the whole error pulls them back
+      position_hold_deadzone = holding ? 2 * hold_zone : 0; // outside it the whole error pulls them back
       Position_mode();
       position_hold_deadzone = 0;
       Gripper.object_detection_status = 3; // at position
