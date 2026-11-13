@@ -342,8 +342,12 @@ float fourBytesToFloat(uint8_t *bytes) {
 /// @param lower_limit 
 /// @return constrained value
 byte mapAndConstrain(int value,int upper_limit, int lower_limit) {
-  // Map the value from the range ex. [-1000, 1500] to [0, 255]
-  int mappedValue = map(value, lower_limit, upper_limit, 0, 255);
+  // Map the value from the range ex. [-1000, 1500] to [0, 255], to the nearest count. map() rounds towards
+  // zero: a gripper standing 2 ticks short of position 255 reported 254.
+  const long span = (long)upper_limit - (long)lower_limit;
+  if (span == 0)
+    return 0; // no range (a gripper that is not calibrated)
+  long mappedValue = (((long)value - (long)lower_limit) * 255L + span / 2) / span;
   // Constrain the mapped value to the range [0, 255]
   byte constrainedValue = constrain(mappedValue, 0, 255);
   return constrainedValue;

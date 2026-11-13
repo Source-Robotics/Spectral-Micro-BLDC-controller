@@ -1368,6 +1368,7 @@ void UART_protocol(Stream &Serialport)
             // Calibrate gripper
             else if (strcmp(command, "Gripcal") == 0)
             {
+                Gripper.cal_restart = 1; // from its first step, also after a run that was cut short
                 PID.V_errSum = 0;
                 PID.Id_errSum = 0;
                 PID.Iq_errSum = 0;

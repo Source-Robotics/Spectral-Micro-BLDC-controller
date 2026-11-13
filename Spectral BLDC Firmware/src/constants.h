@@ -508,6 +508,10 @@ CAN BUS CONSTANTS
 #define PARAM_SENSE_SAMPLE_AT 88    // RAM: PWM counter value (TIM2) to read the current sensors at; -1 whenever the code gets there
 #define PARAM_SENSE_SAMPLE_SEEN 89  // R where the last current reading happened: TIM2 count, +65536 while counting down
 #define PARAM_CALIBRATION_ID 87     // R a new random number at every successful calibration, saved by #Save; 0 none yet
+#define PARAM_RSTINT 90             // RW 0/1: zero the velocity and current integrators on every setpoint command (#Rstint); saved by #Save
+#define PARAM_THERMISTOR 91         // RW 0/1: the thermistor measurement (#Term); saved by #Save
+#define PARAM_GRIPPER_MODE 92       // RW 0/1: gripper mode (#Gripper), in force at once; written only while idle; saved by #Save
+#define PARAM_GRIPPER_STROKE 93     // R the gripper's stroke between positions 0 and 255, ticks; 0 = not calibrated since power-up
 #ifndef BUILD_COMMIT                // set by build_id.py
 #define BUILD_COMMIT 0u
 #define BUILD_TIME 0u

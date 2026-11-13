@@ -646,6 +646,10 @@ void IT_callback(void)
     FOC.sound_q = controller.sound_axis ? s : 0.0f;
   }
 
+  // A gripper calibration that was cut short: put back what it had changed (Gripper_calibration_abort).
+  if (Gripper.In_calibration && (controller.Controller_mode != 7 || controller.Error != 0))
+    Gripper_calibration_abort();
+
   /// If there is no error driver can operate normaly
   /// If error is active we will immediately go to idle
   if (controller.Error == 0)
@@ -2256,6 +2260,11 @@ void Enable_drive()
   }
 }
 
+/// A position error this small or smaller counts as none, for the whole position loop: 0 (off) except while the
+/// gripper holds a position it has reached. Gripper_mode() sets it for its own call and takes it back, so no
+/// other mode ever sees it.
+static int position_hold_deadzone = 0;
+
 /// @todo feedforwards
 /// @brief FOC cascaded position mode
 /// @todo add cogging comp
@@ -2265,6 +2274,9 @@ void Position_mode()
   float position_error = PID.Position_setpoint - controller.Position_Ticks;
   float speed_ff = PID.Feedforward_speed;
   Input_filter(PID.Position_setpoint, PID.Feedforward_speed, &position_error, &speed_ff); // parameter 74 (batch 18)
+  if (position_hold_deadzone > 0 && position_error <= (float)position_hold_deadzone &&
+      position_error >= -(float)position_hold_deadzone)
+    position_error = 0.0f;
   PID.P_errSum = PID.Kp_p * position_error;
   PID.Velocity_setpoint = PID.P_errSum + speed_ff;
 
@@ -2796,17 +2808,60 @@ void Collect_data2()
   /****  End measurment here *********/
 }
 
-#define POSITION_TOLERANCE 5
-#define VELOCITY_CONTACT_THRESHOLD 500.0f
-#define CURRENT_CONTACT_RATIO 0.8f
+#define POSITION_TOLERANCE 5              // ticks: within this of the target a move has arrived
+#define VELOCITY_CONTACT_THRESHOLD 500.0f // ticks/s: slower than this counts as standing still
+#define CURRENT_CONTACT_RATIO 0.8f        // of the grip current: more than this, standing still, is a stall
+// While the gripper holds a position it has reached, a position error this small counts as none (ticks; one
+// position count is about 40 to 170 ticks, so the position it reports does not change). Friction holds the jaws
+// there. Without it the speed loop's integral wound up against the friction for a second or more to move the
+// last ticks, and kept that current afterwards.
+#define GRIPPER_HOLD_DEADZONE 16
+// Once holding, the jaws count as inside until they are this far off (ticks). With one limit, jaws resting a
+// tick outside it went in and out with the encoder's noise, and the integral was dropped each time: a current
+// that sawed between 0 and 100 mA and never moved them (bench 2026-11-13).
+#define GRIPPER_HOLD_RELEASE 32
+// The last stretch of a move slows down: the speed is at most the slowest speed plus this many ticks/s per
+// tick left to go (1/s). At full speed the jaws arrived at 60000 ticks/s, ran 200 ticks past the target and
+// crept back for a second; now they arrive at the slowest speed whatever the speed of the move.
+#define GRIPPER_APPROACH_GAIN 30
+// A stall is reported as an object only once it has lasted this long (control loops: 50 ms). Before, the first
+// loops of a move from standstill, slow and already at the grip current, were reported as an object.
+#define GRIPPER_STALL_CONFIRM (LOOP_FREQ / 20)
+
+// The gripper calibration (Calibrate_gripper)
+#define GRIPPER_CAL_CURRENT 500                    // mA of the push into each end
+#define GRIPPER_CAL_SPEED 40                       // of 255. Lower this if it does not home
+#define GRIPPER_CAL_STALL_CYCLES 3200              // loops standing still at the push current: the end is found
+#define GRIPPER_CAL_RELEASE_CYCLES (LOOP_FREQ / 4) // loops without current after the push, before the end is read
+#define GRIPPER_CAL_TIMEOUT_CYCLES 150000          // the whole run at most
+#define GRIPPER_END_INSET 32                       // ticks that positions 0 and 255 keep clear of the stops
+#define GRIPPER_MIN_STROKE 1000                    // ticks: less travel than this between the ends is no calibration
+
+/// @brief Whether the jaws stand still while the drive pushes with nearly the grip current, and have done so
+/// for GRIPPER_STALL_CONFIRM loops: an object (or a stop). *cycles counts the loops the stall has lasted.
+static bool Gripper_stalled(int *cycles)
+{
+  const bool stall = fabs(controller.Velocity_Average) < VELOCITY_CONTACT_THRESHOLD &&
+                     fabs(FOC.Iq) > CURRENT_CONTACT_RATIO * PID.Iq_current_limit;
+  if (!stall)
+    *cycles = 0;
+  else if (*cycles < GRIPPER_STALL_CONFIRM)
+    (*cycles)++;
+  return *cycles >= GRIPPER_STALL_CONFIRM;
+}
 
 /// @brief Gripper mode
 void Gripper_mode()
 {
+  static bool holding = 0;     // at the position and inside the hold dead zone on the last loop
+  static int stall_cycles = 0; // loops the stall has lasted (Gripper_stalled)
+
   // --- Reset position flag if a new command was received ---
-  if (Gripper.Same_command == 0)
+  const bool new_command = Gripper.Same_command == 0;
+  if (new_command)
   {
     Gripper.At_position = 0; // Only reset here when new command arrives
+    holding = 0;
   }
 
   // 0 to the drive's maximum. The frame carries a signed number: a negative one turned the current clamps round, so
@@ -2817,6 +2872,13 @@ void Gripper_mode()
   }
   PID.Position_setpoint = map(Gripper.position_setpoint, 0, 255, Gripper.max_open_position, Gripper.max_closed_position);
   int vel_setpoint = map(Gripper.speed_setpoint, 0, 255, Gripper.min_speed, Gripper.max_speed);
+  {
+    // slower over the last stretch (GRIPPER_APPROACH_GAIN), never slower than the slowest speed
+    const long to_go = labs((long)PID.Position_setpoint - (long)controller.Position_Ticks);
+    const long approach = (long)Gripper.min_speed + GRIPPER_APPROACH_GAIN * to_go;
+    if (approach < (long)vel_setpoint)
+      vel_setpoint = (int)approach;
+  }
 
   if (PID.Position_setpoint > controller.Position_Ticks)
     PID.Velocity_setpoint = vel_setpoint;
@@ -2828,38 +2890,38 @@ void Gripper_mode()
     Driver_wake(); // the active gripper drives the bridge; the idle branch below puts the driver to sleep
     int pos_error = abs(PID.Position_setpoint - controller.Position_Ticks);
 
-    // ✅ If within tolerance, mark as at position (and never unset again)
-    if (pos_error < POSITION_TOLERANCE)
+    // ✅ If within tolerance, mark as at position (and never unset again). A new command for where the jaws
+    // already rest (inside what the hold allows) is there at once: no move for a few ticks.
+    if (pos_error < POSITION_TOLERANCE || (new_command && pos_error <= GRIPPER_HOLD_RELEASE))
     {
       Gripper.At_position = 1;
     }
 
     if (Gripper.At_position)
     {
-      // ✅ Once reached, stay in position mode — never go back to velocity
+      // Arrived: hold. The move ran in the speed loop, whose integral holds the current the jaws needed on the
+      // way (the rail's friction). Carried into the hold it had to unwind through the friction, at a rate set by
+      // the few ticks left: a second or more of current after every move, and a current that stayed (bench
+      // 2026-11-13, MSG). So the integral is dropped when the jaws arrive, and again whenever they come back
+      // inside the dead zone; while they hold, the position error counts as none and friction keeps them.
+      const bool inside = pos_error <= (holding ? GRIPPER_HOLD_RELEASE : GRIPPER_HOLD_DEADZONE);
+      if (inside && !holding)
+        PID.V_errSum = 0;
+      holding = inside;
+      position_hold_deadzone = holding ? GRIPPER_HOLD_RELEASE : 0; // outside it the whole error pulls them back
       Position_mode();
+      position_hold_deadzone = 0;
       Gripper.object_detection_status = 3; // at position
+      stall_cycles = 0;
     }
     else
     {
-      // ✅ Only used while still approaching the target
       Velocity_mode();
-
-      float current_abs = fabs(FOC.Iq);
-      float velocity_abs = fabs(controller.Velocity_Average);
-
-      if (velocity_abs > VELOCITY_CONTACT_THRESHOLD)
-      {
-        Gripper.object_detection_status = 0; // still moving freely
-      }
-      else if (current_abs > CURRENT_CONTACT_RATIO * PID.Iq_current_limit)
-      {
-        Gripper.object_detection_status = (FOC.Iq > 0) ? 2 : 1;
-      }
+      holding = 0;
+      if (Gripper_stalled(&stall_cycles))
+        Gripper.object_detection_status = (FOC.Iq > 0) ? 2 : 1; // an object: 2 while opening, 1 while closing
       else
-      {
-        Gripper.object_detection_status = 0;
-      }
+        Gripper.object_detection_status = 0; // moving, or not standing still for long enough yet
     }
   }
   else
@@ -2867,6 +2929,7 @@ void Gripper_mode()
     // --- Idle or disabled ---
     PID.Velocity_setpoint = 0;
     Velocity_mode();
+    holding = 0;
 
     // Sleep mode input.Logic high to enable device;
     // logic low to enter low-power sleep mode; internal pulldown
@@ -2877,167 +2940,147 @@ void Gripper_mode()
     controller.reset_pin_state = 0;
     controller.sleep_pin_state = 0;
 
-    float current_abs = fabs(FOC.Iq);
-    float velocity_abs = fabs(controller.Velocity_Average);
-
-    if (velocity_abs < VELOCITY_CONTACT_THRESHOLD && current_abs > CURRENT_CONTACT_RATIO * PID.Iq_current_limit)
-    {
+    if (Gripper_stalled(&stall_cycles))
       Gripper.object_detection_status = (FOC.Iq > 0) ? 2 : 1;
-    }
     else
-    {
       Gripper.object_detection_status = 0;
-    }
   }
 
   Gripper.Same_command = 1;
 }
 
-/// @brief We need to calibrate the gripper before it can be used
-/// Calibration moves gripper to fully open position; maps the value
-/// Move to the fully closed position and map the value. Positions are detected
-/// If large enough current is detected. After this is complete set Gripper.calibrated = 1
+/// The current limit in force when a gripper calibration started, to put back when it ends; -1: none taken.
+static float gripper_cal_limit_before = -1.0f;
+
+/// @brief A gripper calibration that did not finish (idle, E-stop or an error came first): the current limit
+/// goes back to what it was. It used to stay at the 500 mA of the push. The ends of the last calibration stay.
+void Gripper_calibration_abort()
+{
+  if (gripper_cal_limit_before >= 0.0f)
+    PID.Iq_current_limit = gripper_cal_limit_before;
+  gripper_cal_limit_before = -1.0f;
+  Gripper.In_calibration = 0;
+}
+
+/// @brief Gripper calibration (CAN 62, #Gripcal): find both ends of the stroke.
+/// The jaws are pushed open at GRIPPER_CAL_CURRENT until they stand still, the push is released so they come to
+/// rest against the stop, and that position is read; then the same closing. Positions 0 (open) and 255 (closed)
+/// are set GRIPPER_END_INSET ticks inside the two resting positions, so a move to either end arrives in free
+/// travel. Until 2026-11 the ends were read during the push: 0 and 255 were then positions inside the stops,
+/// which a move with less current than the push never reached; it pressed on the stop for good and reported an
+/// object (bench 2026-11-13, MSG: the open end 16 ticks short at 300 mA, with 5 ticks allowed).
+/// Sets Gripper.calibrated: 1 when both ends were found and lie at least GRIPPER_MIN_STROKE apart, 0 otherwise
+/// (also after GRIPPER_CAL_TIMEOUT_CYCLES). The current limit is put back to what it was.
 void Calibrate_gripper()
 {
+  enum
+  {
+    OPEN_PUSH,
+    OPEN_RELEASE,
+    CLOSE_PUSH,
+    CLOSE_RELEASE
+  };
+  static int phase = OPEN_PUSH;
+  static int run_cycles = 0;         // loops of the whole run, for the timeout
+  static int phase_cycles = 0;       // a push: loops standing still without a break; a release: loops since the push
+  static int open_stop = 0;          // where the jaws rest against the open stop
 
-  static int tick_gripper_cnt = 0;
-  static bool grip_cal_1 = 0;
-  static bool grip_cal_2 = 0;
-  static int grip_delay_1 = 0;
-  static int grip_delay_tick_1 = 0;
-
-  static int open_confirm_cnt = 0;
-  static int close_confirm_cnt = 0;
-
-  int current_limit = 500;
-  int speed_limit = 40; // Lower this if it does not home
+  // A new run starts from its first step. A run that was cut short (idle, E-stop, an error) kept its step and
+  // its counters, and the next one went on from there.
+  if (Gripper.cal_restart)
+  {
+    Gripper.cal_restart = 0;
+    phase = OPEN_PUSH;
+    run_cycles = 0;
+    phase_cycles = 0;
+    if (gripper_cal_limit_before < 0.0f)
+      gripper_cal_limit_before = PID.Iq_current_limit;
+  }
   Gripper.In_calibration = 1;
+  run_cycles++;
 
-  tick_gripper_cnt = tick_gripper_cnt + 1;
+  bool finished = false;
+  const int push_speed = map(GRIPPER_CAL_SPEED, 0, 255, Gripper.min_speed, Gripper.max_speed);
 
-  /// Fully close the gripper (This is step two)
-  if (grip_cal_1 == 1 && grip_cal_2 == 0 && grip_delay_1 == 1)
+  switch (phase)
   {
-    /// Transform setpoints into motor redable params
-    PID.Iq_current_limit = current_limit;
-    /// PID.Position_setpoint = map(Gripper.position_setpoint, 0, 255, Gripper.max_open_position, Gripper.max_closed_position);
-    int vel_sepoint = map(speed_limit, 0, 255, Gripper.min_speed, Gripper.max_speed);
-    PID.Velocity_setpoint = -vel_sepoint;
-    Velocity_mode();
-
-    /// If it is not moving and current is around the setpoint
-
-    if (isAroundValue(abs(controller.Velocity_Average), 0, 700) &&
-        isAroundValue(abs(FOC.Iq), PID.Iq_current_limit, 90))
-    {
-      close_confirm_cnt++;
-    }
-    else
-    {
-      close_confirm_cnt = 0;
-    }
-
-    if (close_confirm_cnt >= 3200)
-    {
-      Gripper.max_closed_position = controller.Position_Ticks;
-      grip_cal_2 = 1;
-      close_confirm_cnt = 0;
-    }
-  }
-  /***********************************/
-
-  /// Fully open the gripper (This is step one)
-  if (grip_cal_1 == 0)
-  {
-    /// Transform setpoints into motor redable params
-    PID.Iq_current_limit = current_limit;
-    /// PID.Position_setpoint = map(Gripper.position_setpoint, 0, 255, Gripper.max_open_position, Gripper.max_closed_position);
-    int vel_sepoint = map(speed_limit, 0, 255, Gripper.min_speed, Gripper.max_speed);
-    PID.Velocity_setpoint = vel_sepoint;
+  case OPEN_PUSH:
+  case CLOSE_PUSH:
+    PID.Iq_current_limit = GRIPPER_CAL_CURRENT;
+    PID.Velocity_setpoint = (phase == OPEN_PUSH) ? push_speed : -push_speed;
     Velocity_mode();
     /// If it is not moving and current is around the setpoint
-
     if (isAroundValue(abs(controller.Velocity_Average), 0, 700) &&
         isAroundValue(abs(FOC.Iq), PID.Iq_current_limit, 90))
-    {
-      open_confirm_cnt++;
-    }
+      phase_cycles++;
     else
+      phase_cycles = 0;
+    if (phase_cycles >= GRIPPER_CAL_STALL_CYCLES)
     {
-      open_confirm_cnt = 0;
+      phase = (phase == OPEN_PUSH) ? OPEN_RELEASE : CLOSE_RELEASE;
+      phase_cycles = 0;
     }
+    break;
 
-    if (open_confirm_cnt >= 3200)
+  case OPEN_RELEASE:
+  case CLOSE_RELEASE:
+    // No current: the jaws come to rest where the stop is, not where the push pressed them into it.
+    PID.Iq_setpoint = 0;
+    Torque_mode();
+    PID.V_errSum = 0; // the next push starts without the last one's integral
+    phase_cycles++;
+    if (phase_cycles >= GRIPPER_CAL_RELEASE_CYCLES)
     {
-      Gripper.max_open_position = controller.Position_Ticks;
-      grip_cal_1 = 1;
-      open_confirm_cnt = 0;
+      phase_cycles = 0;
+      if (phase == OPEN_RELEASE)
+      {
+        open_stop = controller.Position_Ticks;
+        phase = CLOSE_PUSH;
+      }
+      else
+      {
+        const int closed_stop = controller.Position_Ticks;
+        // Opening is the positive direction, so the open stop is the larger number.
+        if (open_stop - closed_stop >= GRIPPER_MIN_STROKE)
+        {
+          Gripper.max_open_position = open_stop - GRIPPER_END_INSET;
+          Gripper.max_closed_position = closed_stop + GRIPPER_END_INSET;
+          Gripper.calibrated = 1;
+        }
+        else
+        {
+          Gripper.calibrated = 0; // the jaws did not travel: jammed, or nothing moves them
+        }
+        finished = true;
+      }
     }
+    break;
   }
-  /***********************************/
-
-  /// Small delay between direction change
-  if (grip_cal_1 == 1 && grip_delay_1 == 0)
-  {
-    // digitalWriteFast(SLEEP, LOW);
-    // digitalWriteFast(RESET, LOW);
-    controller.reset_pin_state = 0;
-    controller.sleep_pin_state = 0;
-    grip_delay_tick_1 = grip_delay_tick_1 + 1;
-    PID.Velocity_setpoint = 0;
-    Velocity_mode();
-    if (grip_delay_tick_1 == 100)
-    {
-      grip_delay_tick_1 = 0;
-      grip_delay_1 = 1;
-    }
-  }
-  /***********************************/
-
-  /// At the end reset everything
-  if (grip_cal_1 == 1 && grip_cal_2 == 1 && grip_delay_1 == 1)
-  {
-
-    Gripper.calibrated = 1;
-
-    grip_cal_1 = 0;
-    grip_cal_2 = 0;
-
-    grip_delay_1 = 0;
-    grip_delay_tick_1 = 0;
-    tick_gripper_cnt = 0;
-    // digitalWriteFast(SLEEP, LOW);
-    // digitalWriteFast(RESET, LOW);
-    controller.reset_pin_state = 0;
-    controller.sleep_pin_state = 0;
-    controller.Controller_mode = 0;
-    Gripper.In_calibration = 0;
-    open_confirm_cnt = 0;
-    close_confirm_cnt = 0;
-  }
-  /***********************************/
 
   /// Calibration timed out
-  /// during whole calibration we keep track of tick_gripper_cnt
-  /// One tick is equal to interrupt time.
-  if (tick_gripper_cnt >= 150000)
+  /// during whole calibration we keep track of the loops; one loop is equal to interrupt time.
+  if (!finished && run_cycles >= GRIPPER_CAL_TIMEOUT_CYCLES)
   {
     Gripper.calibrated = 0;
+    finished = true;
+  }
 
-    grip_cal_1 = 0;
-    grip_cal_2 = 0;
-
-    grip_delay_1 = 0;
-    grip_delay_tick_1 = 0;
-    tick_gripper_cnt = 0;
+  /// At the end reset everything
+  if (finished)
+  {
+    phase = OPEN_PUSH;
+    run_cycles = 0;
+    phase_cycles = 0;
+    if (gripper_cal_limit_before >= 0.0f)
+      PID.Iq_current_limit = gripper_cal_limit_before;
+    gripper_cal_limit_before = -1.0f;
+    PID.V_errSum = 0;
     // digitalWriteFast(SLEEP, LOW);
     // digitalWriteFast(RESET, LOW);
     controller.reset_pin_state = 0;
     controller.sleep_pin_state = 0;
     controller.Controller_mode = 0;
     Gripper.In_calibration = 0;
-    open_confirm_cnt = 0;
-    close_confirm_cnt = 0;
   }
 }
 

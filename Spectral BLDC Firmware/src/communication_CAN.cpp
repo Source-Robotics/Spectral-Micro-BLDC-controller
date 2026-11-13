@@ -824,7 +824,7 @@ void CAN_protocol(Stream &Serialport)
             }
 
             case IN_GRIPPER_CALIB:{
-                
+                Gripper.cal_restart = 1; // from its first step, also after a run that was cut short
                 PID.V_errSum = 0;
                 PID.Id_errSum = 0;
                 PID.Iq_errSum = 0;
@@ -1252,6 +1252,21 @@ bool Param_get(uint8_t param, int32_t *value)
     case PARAM_CALIBRATION_ID:
         *value = (int32_t)controller.calibration_id;
         return true;
+    case PARAM_RSTINT:
+        *value = PID.Reset_integral_accumulator ? 1 : 0;
+        return true;
+    case PARAM_THERMISTOR:
+        *value = controller.Thermistor_on_off ? 1 : 0;
+        return true;
+    case PARAM_GRIPPER_MODE:
+        *value = controller.I_AM_GRIPPER ? 1 : 0;
+        return true;
+    case PARAM_GRIPPER_STROKE:
+    {
+        const int stroke = Gripper.max_open_position - Gripper.max_closed_position;
+        *value = Gripper.calibrated ? (stroke < 0 ? -stroke : stroke) : 0;
+        return true;
+    }
     case PARAM_SOUND_LIMIT_MV:
         *value = controller.sound_limit_mv;
         return true;
@@ -1430,6 +1445,25 @@ bool Param_set(uint8_t param, int32_t value)
         if (value < 1 || value > 49 || controller.Controller_mode != 0)
             return false;
         controller.pole_pairs = value;
+        return true;
+    // The three settings a preset writes that only UART could set (#Rstint, #Term, #Gripper): 0 or 1, anything
+    // else is refused and the value in force stays, so the read-back shows it. Save config keeps them.
+    case PARAM_RSTINT:
+        if (value != 0 && value != 1)
+            return false;
+        PID.Reset_integral_accumulator = value;
+        return true;
+    case PARAM_THERMISTOR:
+        if (value != 0 && value != 1)
+            return false;
+        controller.Thermistor_on_off = value;
+        return true;
+    case PARAM_GRIPPER_MODE:
+        // In force at once, as #Gripper: the drive then reads its commands as a gripper (or as a motor). Only
+        // while idle, so a move is never cut over to the other kind of drive half-way.
+        if ((value != 0 && value != 1) || controller.Controller_mode != 0)
+            return false;
+        controller.I_AM_GRIPPER = value;
         return true;
     case PARAM_COMM_DELAY_US:
         if (value < 0 || value > COMM_DELAY_MAX_US)
