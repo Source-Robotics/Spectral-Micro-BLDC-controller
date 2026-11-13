@@ -7,9 +7,10 @@ authors:
     website: https://source-robotics.com
   - given-names: Petar
     family-names: Crnjak
+doi: 10.5281/zenodo.24113621
 abstract: "A compact field-oriented-control controller for brushless (BLDC) motors, with CAN, UART and open-source firmware."
-version: V109
-date-released: 2026-11-10
+version: V110
+date-released: 2026-11-13
 repository-code: https://github.com/Source-Robotics/Spectral-Micro-BLDC-controller
 url: https://docs.source-robotics.com/Spectral-BLDC-docs/
 license: GPL-3.0-only
