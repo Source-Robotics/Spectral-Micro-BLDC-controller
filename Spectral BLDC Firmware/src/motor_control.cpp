@@ -2824,6 +2824,10 @@ void Collect_data2()
 // tick left to go (1/s). At full speed the jaws arrived at 60000 ticks/s, ran 200 ticks past the target and
 // crept back for a second; now they arrive at the slowest speed whatever the speed of the move.
 #define GRIPPER_APPROACH_GAIN 30
+// A move picks up speed from the slowest speed: the whole range of speeds in this many loops (0.1 s). Before,
+// the speed loop was asked for the full speed at once and answered with the full grip current for the first
+// 30 ms of every move (a click).
+#define GRIPPER_START_RAMP_LOOPS (LOOP_FREQ / 10)
 // A stall is reported as an object only once it has lasted this long (control loops: 50 ms). Before, the first
 // loops of a move from standstill, slow and already at the grip current, were reported as an object.
 #define GRIPPER_STALL_CONFIRM (LOOP_FREQ / 20)
@@ -2855,6 +2859,8 @@ void Gripper_mode()
 {
   static bool holding = 0;     // at the position and inside the hold dead zone on the last loop
   static int stall_cycles = 0; // loops the stall has lasted (Gripper_stalled)
+  static int ramp_speed = 0;     // the speed asked of the speed loop while a move picks up speed, ticks/s
+  static int ramp_direction = 0; // the way that move goes: 1 opening, -1 closing, 0 no move under way
 
   // --- Reset position flag if a new command was received ---
   const bool new_command = Gripper.Same_command == 0;
@@ -2880,10 +2886,9 @@ void Gripper_mode()
       vel_setpoint = (int)approach;
   }
 
-  if (PID.Position_setpoint > controller.Position_Ticks)
-    PID.Velocity_setpoint = vel_setpoint;
-  else if (PID.Position_setpoint < controller.Position_Ticks)
-    PID.Velocity_setpoint = -vel_setpoint;
+  // which way the target lies: 1 opening (the ticks go up), -1 closing, 0 there
+  const int direction = (PID.Position_setpoint > controller.Position_Ticks) ? 1
+                        : (PID.Position_setpoint < controller.Position_Ticks) ? -1 : 0;
 
   if (Gripper.action_status == 1 && Gripper.calibrated && Gripper.activated && controller.I_AM_GRIPPER)
   {
@@ -2913,9 +2918,23 @@ void Gripper_mode()
       position_hold_deadzone = 0;
       Gripper.object_detection_status = 3; // at position
       stall_cycles = 0;
+      ramp_direction = 0;
     }
     else
     {
+      // Soft start: a move, or a turn the other way, begins at the slowest speed and picks up to its own
+      // (GRIPPER_START_RAMP_LOOPS). A changed command the same way keeps the speed it has, so a host that
+      // streams positions is not slowed down.
+      if (direction != ramp_direction)
+      {
+        ramp_direction = direction;
+        ramp_speed = Gripper.min_speed;
+      }
+      ramp_speed += (Gripper.max_speed - Gripper.min_speed) / GRIPPER_START_RAMP_LOOPS + 1;
+      if (ramp_speed > vel_setpoint)
+        ramp_speed = vel_setpoint;
+      if (direction != 0)
+        PID.Velocity_setpoint = direction * ramp_speed;
       Velocity_mode();
       holding = 0;
       if (Gripper_stalled(&stall_cycles))
@@ -2930,6 +2949,7 @@ void Gripper_mode()
     PID.Velocity_setpoint = 0;
     Velocity_mode();
     holding = 0;
+    ramp_direction = 0;
 
     // Sleep mode input.Logic high to enable device;
     // logic low to enter low-power sleep mode; internal pulldown
