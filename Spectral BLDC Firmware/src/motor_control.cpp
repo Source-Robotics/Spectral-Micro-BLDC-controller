@@ -2848,9 +2848,11 @@ void Collect_data2()
 #define GRIPPER_CAL_CURRENT 500                    // mA of the push into each end
 #define GRIPPER_CAL_SPEED 40                       // of 255. Lower this if it does not home
 #define GRIPPER_CAL_STALL_CYCLES 3200              // loops standing still at the push current: the end is found
-#define GRIPPER_CAL_RELEASE_CYCLES (LOOP_FREQ / 4) // loops without current after the push, before the end is read
+#define GRIPPER_CAL_TOUCH_CURRENT 100              // mA of the light push in which each end is read
+#define GRIPPER_CAL_RELEASE_CYCLES (LOOP_FREQ / 4) // loops of that light push after the full one, before the end is read
 #define GRIPPER_CAL_TIMEOUT_CYCLES 150000          // the whole run at most
-#define GRIPPER_END_INSET 32                       // ticks that positions 0 and 255 keep clear of the stops
+#define GRIPPER_END_INSET_OPEN 32                  // ticks position 0 keeps clear of the open stop
+#define GRIPPER_END_INSET_CLOSED 16                // ticks position 255 keeps clear of the closed stop: less, a gap there shows
 #define GRIPPER_MIN_STROKE 1000                    // ticks: less travel than this between the ends is no calibration
 
 /// @brief Whether the jaws stand still while the drive pushes with nearly the grip current, and have done so
@@ -3000,10 +3002,10 @@ void Gripper_calibration_abort()
 }
 
 /// @brief Gripper calibration (CAN 62, #Gripcal): find both ends of the stroke.
-/// The jaws are pushed open at GRIPPER_CAL_CURRENT until they stand still, the push is released so they come to
-/// rest against the stop, and that position is read; then the same closing. Positions 0 (open) and 255 (closed)
-/// are set GRIPPER_END_INSET ticks inside the two resting positions, so a move to either end arrives in free
-/// travel. Until 2026-11 the ends were read during the push: 0 and 255 were then positions inside the stops,
+/// The jaws are pushed open at GRIPPER_CAL_CURRENT until they stand still, the push is eased to a light one
+/// (GRIPPER_CAL_TOUCH_CURRENT) so they settle against the stop, and that position is read; then the same
+/// closing. Positions 0 (open) and 255 (closed) are set GRIPPER_END_INSET_OPEN and _CLOSED ticks inside the two
+/// positions read, so a move to either end arrives in free travel. Until 2026-11 the ends were read during the push: 0 and 255 were then positions inside the stops,
 /// which a move with less current than the push never reached; it pressed on the stop for good and reported an
 /// object (bench 2026-11-13, MSG: the open end 16 ticks short at 300 mA, with 5 ticks allowed).
 /// Sets Gripper.calibrated: 1 when both ends were found and lie at least GRIPPER_MIN_STROKE apart, 0 otherwise
@@ -3060,10 +3062,12 @@ void Calibrate_gripper()
 
   case OPEN_RELEASE:
   case CLOSE_RELEASE:
-    // No current: the jaws come to rest where the stop is, not where the push pressed them into it.
-    PID.Iq_setpoint = 0;
-    Torque_mode();
-    PID.V_errSum = 0; // the next push starts without the last one's integral
+    // A light push: the jaws settle where the stop is, not where the full push pressed them into it. With no
+    // current at all, jaws that move freely were thrown back by the stop and coasted off it (SSG-48, bench
+    // 2026-11-13: position 255 ended about 1 mm open, and the ends moved by 65 ticks from one run to the next).
+    current_limit_override = GRIPPER_CAL_TOUCH_CURRENT;
+    PID.Velocity_setpoint = (phase == OPEN_RELEASE) ? push_speed : -push_speed;
+    Velocity_mode();
     phase_cycles++;
     if (phase_cycles >= GRIPPER_CAL_RELEASE_CYCLES)
     {
@@ -3072,6 +3076,7 @@ void Calibrate_gripper()
       {
         open_stop = controller.Position_Ticks;
         phase = CLOSE_PUSH;
+        PID.V_errSum = 0; // the push the other way starts without this one's integral
       }
       else
       {
@@ -3079,8 +3084,8 @@ void Calibrate_gripper()
         // Opening is the positive direction, so the open stop is the larger number.
         if (open_stop - closed_stop >= GRIPPER_MIN_STROKE)
         {
-          Gripper.max_open_position = open_stop - GRIPPER_END_INSET;
-          Gripper.max_closed_position = closed_stop + GRIPPER_END_INSET;
+          Gripper.max_open_position = open_stop - GRIPPER_END_INSET_OPEN;
+          Gripper.max_closed_position = closed_stop + GRIPPER_END_INSET_CLOSED;
           Gripper.calibrated = 1;
         }
         else
