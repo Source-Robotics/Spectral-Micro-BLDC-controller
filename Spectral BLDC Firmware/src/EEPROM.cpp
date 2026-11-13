@@ -268,7 +268,7 @@ static void Load_settings_from_eeprom()
 static const unsigned int SETTINGS2_INT_ADDRS[] = {
     TOOL_ID_EEPROM, WD_FALLBACK_TIME_EEPROM, WD_FALLBACK_CURRENT_EEPROM, WD_FALLBACK_SPEED_EEPROM,
     WD_AFTER_ACTION_EEPROM, BOARD_PRODUCT_EEPROM, CALIBRATION_ID_EEPROM,
-    SETTINGS2_RESERVED_I3_EEPROM, SETTINGS2_RESERVED_I4_EEPROM, SETTINGS2_FEATURE_FLAGS_EEPROM};
+    BRAKE_COAST_EEPROM, SETTINGS2_RESERVED_I4_EEPROM, SETTINGS2_FEATURE_FLAGS_EEPROM};
 static const unsigned int SETTINGS2_FLOAT_ADDRS[] = {
     SETTINGS2_RESERVED_F1_EEPROM, SETTINGS2_RESERVED_F2_EEPROM, SETTINGS2_RESERVED_F3_EEPROM,
     SETTINGS2_RESERVED_F4_EEPROM};
@@ -292,6 +292,7 @@ static void Settings2_defaults_to_ram()
   controller.wd_fallback_speed = 1000;
   controller.wd_after_action = WD_ACTION_LEGACY;
   controller.board_product = 0;
+  controller.brake_coast = BRAKE_COAST_DEFAULT;
 }
 
 /// @brief Clamp the block 2 values to what the firmware accepts (also used for values set over CAN/UART).
@@ -322,6 +323,11 @@ static void Load_settings2_from_eeprom()
   controller.wd_fallback_speed = readInt(WD_FALLBACK_SPEED_EEPROM);
   controller.wd_after_action = readInt(WD_AFTER_ACTION_EEPROM);
   controller.board_product = readInt(BOARD_PRODUCT_EEPROM);
+  {
+    // 1 coast, 2 brake; anything else (0 on a block from before it was saved): the firmware's default
+    const int saved = readInt(BRAKE_COAST_EEPROM);
+    controller.brake_coast = saved == 2 ? 1 : saved == 1 ? 0 : BRAKE_COAST_DEFAULT;
+  }
   Settings2_sanitize();
 }
 
@@ -338,7 +344,7 @@ static void Set_Default_settings2_block()
   writeInt(WD_AFTER_ACTION_EEPROM, controller.wd_after_action);
   writeInt(BOARD_PRODUCT_EEPROM, 0);
   writeInt(CALIBRATION_ID_EEPROM, 0);
-  writeInt(SETTINGS2_RESERVED_I3_EEPROM, 0);
+  writeInt(BRAKE_COAST_EEPROM, 0); // not set: the default applies
   writeInt(SETTINGS2_RESERVED_I4_EEPROM, 0);
   writeFloat(SETTINGS2_RESERVED_F1_EEPROM, 0);
   writeFloat(SETTINGS2_RESERVED_F2_EEPROM, 0);
@@ -424,6 +430,7 @@ static void Write_settings2_block()
   writeInt(WD_FALLBACK_CURRENT_EEPROM, controller.wd_fallback_current);
   writeInt(WD_FALLBACK_SPEED_EEPROM, controller.wd_fallback_speed);
   writeInt(WD_AFTER_ACTION_EEPROM, controller.wd_after_action);
+  writeInt(BRAKE_COAST_EEPROM, controller.brake_coast ? 2 : 1); // parameter 18: it was lost at every power-up
   writeInt(SETTINGS2_CRC_EEPROM, (int32_t)Compute_settings2_crc_from_eeprom());
 }
 

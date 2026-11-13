@@ -187,7 +187,10 @@ EEPROM CONSTANTS
 #define WD_AFTER_ACTION_EEPROM 276       // int: after hold/descend, 0 legacy, 2 brake, 3 coast
 #define BOARD_PRODUCT_EEPROM 280        // int: product lock stamp, the product that calibrated this board (1, 2; 0 none)
 #define CALIBRATION_ID_EEPROM 284       // int: a new random number at every successful calibration; 0 none yet
-#define SETTINGS2_RESERVED_I3_EEPROM 288 // unused int, reserved
+// Brake or coast when idle (parameter 18), in what was the first reserved int: 0 not set (every block written
+// before 2026-11-13 holds 0 here, and the firmware's own default then applies), 1 coast, 2 brake.
+#define BRAKE_COAST_EEPROM 288
+#define BRAKE_COAST_DEFAULT 0            // this firmware when nothing is saved: coast
 #define SETTINGS2_RESERVED_I4_EEPROM 292 // unused int, reserved
 #define SETTINGS2_RESERVED_F1_EEPROM 296 // unused float, reserved
 #define SETTINGS2_RESERVED_F2_EEPROM 300 // unused float, reserved
@@ -385,7 +388,7 @@ CAN BUS CONSTANTS
 #define PARAM_VELOCITY_LIMIT 15     // F velocity limit, ticks/s (IN_LIMITS)
 #define PARAM_CURRENT_LIMIT 16      // F current limit, mA (IN_LIMITS)
 #define PARAM_VOLTAGE_LIMIT 17      // voltage limit, mV, 0 = Vbus (IN_VLIM)
-#define PARAM_BRAKE_COAST 18        // idle behaviour, 1 brake, 0 coast (IN_SETTINGS bit 0)
+#define PARAM_BRAKE_COAST 18        // idle behaviour, 1 brake, 0 coast (IN_SETTINGS bit 0); saved by #Save since 2026-11
 #define PARAM_HEARTBEAT_MS 19       // heartbeat period ms, 0 = off (HEARTBEAT_SETUP)
 #define PARAM_KT 20                 // F torque constant (IN_KT)
 #define PARAM_SENSE1_OFFSET 21      // current-sense zero of channel 1, ADC counts from 2048 (1 count = 1.6 mA);

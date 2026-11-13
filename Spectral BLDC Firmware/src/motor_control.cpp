@@ -455,6 +455,9 @@ static void Sense_zero_late_step()
 /// Watchdog fallback (hold / descend, see watchdog_action.h). Started on the first control loop of a
 /// pure watchdog trip, if the drive was in a closed-loop mode; cleared as soon as the error is cleared.
 static bool wd_fallback_active = false;
+// An error is latched and its first loop is over. Hold and descend are decided on that first loop only: a trip
+// while idle started them later, when the next motion frame set a mode with the error still latched.
+static bool wd_error_seen = false;
 static uint32_t wd_fallback_loops = 0; // control loops since the fallback started
 static int wd_hold_position = 0;       // position captured at the trip, held by WD_RESP_HOLD
 
@@ -655,6 +658,7 @@ void IT_callback(void)
   if (controller.Error == 0)
   {
     wd_fallback_active = false;
+    wd_error_seen = false;
     Comm_delay_update(); // parameter 64: the output rotation for this loop
     // every mode that drives the bridge: the driver awake, whatever a handler's wake came to (see Driver_wake())
     // (not gripper mode: it wakes the driver itself while it is active and sleeps it while it is not)
@@ -719,7 +723,10 @@ void IT_callback(void)
     /// this firmware, which is COAST -- not the persistent brake_coast setting.
     const bool only_wd = only_watchdog_error();
     const int action = controller.watchdog_action;
-    if (!wd_fallback_active && only_wd && (action == WD_ACTION_HOLD || action == WD_ACTION_DESCEND) &&
+    const bool first_error_loop = !wd_error_seen;
+    wd_error_seen = true;
+    if (first_error_loop && !wd_fallback_active && only_wd &&
+        (action == WD_ACTION_HOLD || action == WD_ACTION_DESCEND) &&
         watchdog_fallback_mode_ok(controller.Controller_mode))
     {
       // First loop of the trip; Controller_mode still holds the mode the host left the drive in.
@@ -2265,6 +2272,12 @@ void Enable_drive()
 /// other mode ever sees it.
 static int position_hold_deadzone = 0;
 
+/// The current limit of the speed loop for this call, mA; -1: the drive's own (PID.Iq_current_limit, parameter 16).
+/// Gripper mode and the gripper calibration set it to the grip current and take it back, so the drive's limit
+/// stays what the user set. They used to write the grip current into the limit itself, and a #Save then
+/// stored it as the drive's.
+static float current_limit_override = -1.0f;
+
 /// @todo feedforwards
 /// @brief FOC cascaded position mode
 /// @todo add cogging comp
@@ -2846,7 +2859,7 @@ void Collect_data2()
 static bool Gripper_stalled(int *cycles)
 {
   const bool stall = fabs(controller.Velocity_Average) < VELOCITY_CONTACT_THRESHOLD &&
-                     fabs(FOC.Iq) > CURRENT_CONTACT_RATIO * PID.Iq_current_limit;
+                     fabs(FOC.Iq) > CURRENT_CONTACT_RATIO * current_limit_override; // the grip current
   if (!stall)
     *cycles = 0;
   else if (*cycles < GRIPPER_STALL_CONFIRM)
@@ -2874,7 +2887,8 @@ void Gripper_mode()
   // they pinned the current at full whatever the loop asked for, and a large one was no limit at all.
   {
     const int grip_limit = abs(Gripper.current_setpoint);
-    PID.Iq_current_limit = grip_limit > MAX_DRIVE_CURRENT ? MAX_DRIVE_CURRENT : grip_limit;
+    // the gripper's own limit for this loop; the drive's limit (parameter 16) stays as it is
+    current_limit_override = grip_limit > MAX_DRIVE_CURRENT ? MAX_DRIVE_CURRENT : grip_limit;
   }
   PID.Position_setpoint = map(Gripper.position_setpoint, 0, 255, Gripper.max_open_position, Gripper.max_closed_position);
   int vel_setpoint = map(Gripper.speed_setpoint, 0, 255, Gripper.min_speed, Gripper.max_speed);
@@ -2967,18 +2981,14 @@ void Gripper_mode()
   }
 
   Gripper.Same_command = 1;
+  current_limit_override = -1.0f;
 }
 
-/// The current limit in force when a gripper calibration started, to put back when it ends; -1: none taken.
-static float gripper_cal_limit_before = -1.0f;
-
-/// @brief A gripper calibration that did not finish (idle, E-stop or an error came first): the current limit
-/// goes back to what it was. It used to stay at the 500 mA of the push. The ends of the last calibration stay.
+/// @brief A gripper calibration that did not finish (idle, E-stop or an error came first). The ends of the last
+/// calibration stay. The drive's current limit needs nothing: the calibration pushes with its own.
 void Gripper_calibration_abort()
 {
-  if (gripper_cal_limit_before >= 0.0f)
-    PID.Iq_current_limit = gripper_cal_limit_before;
-  gripper_cal_limit_before = -1.0f;
+  current_limit_override = -1.0f;
   Gripper.In_calibration = 0;
 }
 
@@ -2990,7 +3000,8 @@ void Gripper_calibration_abort()
 /// which a move with less current than the push never reached; it pressed on the stop for good and reported an
 /// object (bench 2026-11-13, MSG: the open end 16 ticks short at 300 mA, with 5 ticks allowed).
 /// Sets Gripper.calibrated: 1 when both ends were found and lie at least GRIPPER_MIN_STROKE apart, 0 otherwise
-/// (also after GRIPPER_CAL_TIMEOUT_CYCLES). The current limit is put back to what it was.
+/// (also after GRIPPER_CAL_TIMEOUT_CYCLES). It pushes with its own current limit; the drive's (parameter 16) is
+/// not touched.
 void Calibrate_gripper()
 {
   enum
@@ -3013,8 +3024,6 @@ void Calibrate_gripper()
     phase = OPEN_PUSH;
     run_cycles = 0;
     phase_cycles = 0;
-    if (gripper_cal_limit_before < 0.0f)
-      gripper_cal_limit_before = PID.Iq_current_limit;
   }
   Gripper.In_calibration = 1;
   run_cycles++;
@@ -3026,12 +3035,12 @@ void Calibrate_gripper()
   {
   case OPEN_PUSH:
   case CLOSE_PUSH:
-    PID.Iq_current_limit = GRIPPER_CAL_CURRENT;
+    current_limit_override = GRIPPER_CAL_CURRENT;
     PID.Velocity_setpoint = (phase == OPEN_PUSH) ? push_speed : -push_speed;
     Velocity_mode();
     /// If it is not moving and current is around the setpoint
     if (isAroundValue(abs(controller.Velocity_Average), 0, 700) &&
-        isAroundValue(abs(FOC.Iq), PID.Iq_current_limit, 90))
+        isAroundValue(abs(FOC.Iq), GRIPPER_CAL_CURRENT, 90))
       phase_cycles++;
     else
       phase_cycles = 0;
@@ -3077,6 +3086,8 @@ void Calibrate_gripper()
     break;
   }
 
+  current_limit_override = -1.0f; // the push current was for this loop only
+
   /// Calibration timed out
   /// during whole calibration we keep track of the loops; one loop is equal to interrupt time.
   if (!finished && run_cycles >= GRIPPER_CAL_TIMEOUT_CYCLES)
@@ -3091,9 +3102,6 @@ void Calibrate_gripper()
     phase = OPEN_PUSH;
     run_cycles = 0;
     phase_cycles = 0;
-    if (gripper_cal_limit_before >= 0.0f)
-      PID.Iq_current_limit = gripper_cal_limit_before;
-    gripper_cal_limit_before = -1.0f;
     PID.V_errSum = 0;
     // digitalWriteFast(SLEEP, LOW);
     // digitalWriteFast(RESET, LOW);
@@ -3282,7 +3290,7 @@ void Comm_delay_update()
 /// was removed in batch 19: on the bench it made a saturated speed step worse and changed nothing in moves or stalls.
 float Velocity_pi(float err_p, float err_i)
 {
-  const float limit = PID.Iq_current_limit;
+  const float limit = current_limit_override >= 0.0f ? current_limit_override : PID.Iq_current_limit;
   const float ff = PID.Feedforward_current + Cogging_ff_mA();
   PID.V_errSum = PID.V_errSum + err_i * PID.Ki_v;
   if (PID.V_errSum > limit)

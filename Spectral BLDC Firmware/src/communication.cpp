@@ -493,6 +493,15 @@ void UART_protocol(Stream &Serialport)
                 Serialport.println("Idle");
             }
 
+            // E-stop over UART, as the CAN E-stop frame: the E-stop error is latched, the motor is released and a
+            // calibration that is running ends (#Idle does not end one). #Clear clears it. Until 2026-11 only CAN
+            // could do this; a host on UART had to reset the drive to stop a calibration.
+            else if (strcmp(command, "Estop") == 0)
+            {
+                controller.ESTOP_error = 1;
+                Serialport.println("E-stop");
+            }
+
             // Set/Get idle-mode phase behavior: 0 = coast (driver disabled, Hi-Z),
             // 1 = brake (driver stays enabled, zero-voltage PWM vector shorts the phases).
             // Only takes effect once idle (Controller_mode == 0) -- send Idle first/after.
@@ -835,6 +844,15 @@ void UART_protocol(Stream &Serialport)
                 Serialport.println(controller.Sense3_mA);
             }
             // Enter closed loop mode, idle state
+            // #Close while a calibration runs: end it the way an E-stop or its own failure does (its steps start
+            // over next time, the current and voltage limits are put back, the bridge is off). Taking the interrupt
+            // away from it, as #Close does below, left it half-done: the next #Cal went on from the old step and the
+            // calibration's 1600 mA limit could be saved.
+            else if (strcmp(command, "Close") == 0 && controller.Calibration == 1)
+            {
+                controller.Calib_error = 1;
+                Serialport.println("Close: the calibration is stopped");
+            }
             else if (strcmp(command, "Close") == 0)
             {
                 digitalWriteFast(EN1, HIGH);
